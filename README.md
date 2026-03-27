@@ -105,6 +105,32 @@ RGA backend module contract (`rga_helper` by default):
 
 - Must export `preprocess_pair_bgr_to_gray(left_bgr, right_bgr, scale)`
 - Must return `(left_resized_bgr, right_resized_bgr, left_gray, right_gray)`
+- Optional: export `is_available()` returning `True` only when hardware backend is usable
+
+Included module:
+
+- `rga_helper.py` is provided as an adapter skeleton.
+- In `auto` mode, it reports unavailable unless a compatible RGA Python binding exists.
+- To enable real hardware acceleration, implement your binding adapter in `rga_helper.py` function `_rga_preprocess_impl(...)`.
+
+Troubleshooting (still using CPU):
+
+- Startup log now prints `preprocess_detail=...` with fallback reason.
+- If you see fallback to CPU, check that your selected module exports:
+  - `is_available()` returning `True`
+  - `preprocess_pair_bgr_to_gray(...)`
+- On RK3588, having `/dev/rga` and `librga` alone is not enough for this Python path; you still need a Python binding or a custom C++/pybind adapter.
+
+Build native `rockchip_rga` backend on this repo:
+
+```bash
+cd native_rga
+./build.sh
+cd ..
+python3 main.py --preprocess-backend rga --rga-module rga_helper
+```
+
+If startup prints `preprocess_backend=rga`, hardware preprocess path is active.
 
 ## SGBM Tuning Guide (RK3588)
 

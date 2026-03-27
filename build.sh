@@ -45,6 +45,7 @@ PYI_ARGS=(
   --noconfirm
   --clean
   --name "$APP_NAME"
+  --hidden-import rga_helper
   --collect-all cv2
   --add-data "stereo_calib_params.npz:."
 )

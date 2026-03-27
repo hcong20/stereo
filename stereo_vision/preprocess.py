@@ -42,6 +42,7 @@ class FramePreprocessor:
     def __init__(self, cfg: PreprocessConfig):
         self.cfg = cfg
         self._rga_backend: Optional[RGABackendProtocol] = None
+        self._backend_reason: str = ""
         self._resolved_backend = self._resolve_backend()
 
     @property
@@ -49,22 +50,33 @@ class FramePreprocessor:
         """Return the resolved backend name in use."""
         return self._resolved_backend
 
+    @property
+    def backend_reason(self) -> str:
+        """Return explanatory detail about backend resolution."""
+        return self._backend_reason
+
     def _resolve_backend(self) -> str:
         backend = str(self.cfg.backend).lower().strip()
         if backend not in {"auto", "cpu", "rga"}:
             raise ValueError("preprocess backend must be one of: auto, cpu, rga")
 
         if backend == "cpu":
+            self._backend_reason = "forced by --preprocess-backend cpu"
             return "cpu"
 
         if backend == "rga":
             self._rga_backend = self._load_rga_backend(raise_on_failure=True)
+            self._backend_reason = f"using module '{self.cfg.rga_module}'"
             return "rga"
 
         # auto mode: try RGA first, then fallback to CPU.
         self._rga_backend = self._load_rga_backend(raise_on_failure=False)
         if self._rga_backend is not None:
+            self._backend_reason = f"auto-selected module '{self.cfg.rga_module}'"
             return "rga"
+        self._backend_reason = (
+            f"auto fallback to CPU; RGA module '{self.cfg.rga_module}' is missing or unavailable"
+        )
         return "cpu"
 
     def _load_rga_backend(self, raise_on_failure: bool) -> Optional[RGABackendProtocol]:
@@ -75,6 +87,9 @@ class FramePreprocessor:
                 raise AttributeError(
                     f"Module '{self.cfg.rga_module}' missing preprocess_pair_bgr_to_gray()"
                 )
+            is_available_fn = getattr(mod, "is_available", None)
+            if callable(is_available_fn) and not bool(is_available_fn()):
+                raise RuntimeError(f"Module '{self.cfg.rga_module}' reports RGA unavailable")
             return mod
         except Exception as exc:  # pragma: no cover - backend is optional
             if raise_on_failure:

@@ -320,6 +320,7 @@ def main() -> None:
         )
     )
     print(f"[INFO] preprocess_backend={preprocessor.backend_name}")
+    print(f"[INFO] preprocess_detail={preprocessor.backend_reason}")
 
     swap_lr = bool(args.swap_lr)
     viz_state = VizState()
