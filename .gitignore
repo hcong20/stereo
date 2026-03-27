@@ -26,3 +26,12 @@ frames/
 # Local calibration and test data
 stereo_calib_params.npz
 calib_*.npz
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Python packaging artifacts
+*.egg-info/
+.pytest_cache/

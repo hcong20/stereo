@@ -43,6 +43,32 @@ sudo apt install -y python3-opencv python3-numpy v4l-utils gstreamer1.0-tools \
 python3 main.py --device /dev/video0 --calib stereo_calib_params.npz --fps 30
 ```
 
+## Build Executable (Ubuntu 22.04)
+
+Use the included build helper:
+
+```bash
+./build.sh
+```
+
+This creates a standalone executable at:
+
+```bash
+dist/stereo_app
+```
+
+Run it with:
+
+```bash
+./dist/stereo_app --device /dev/video0 --calib ./stereo_calib_params.npz --fps 30
+```
+
+Optional: build a folder bundle with faster startup:
+
+```bash
+./build.sh onedir
+```
+
 Useful flags:
 
 ```bash
