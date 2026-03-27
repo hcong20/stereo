@@ -88,6 +88,24 @@ For low-latency GStreamer capture:
 python3 main.py --gstreamer --device /dev/video0 --calib stereo_calib_params.npz
 ```
 
+RGA-ready preprocessing backend selection:
+
+```bash
+# Auto mode: try RGA module first, fallback to CPU
+python3 main.py --preprocess-backend auto --rga-module rga_helper
+
+# Force CPU preprocessing
+python3 main.py --preprocess-backend cpu
+
+# Force RGA (fails fast if module is not installed)
+python3 main.py --preprocess-backend rga --rga-module rga_helper
+```
+
+RGA backend module contract (`rga_helper` by default):
+
+- Must export `preprocess_pair_bgr_to_gray(left_bgr, right_bgr, scale)`
+- Must return `(left_resized_bgr, right_resized_bgr, left_gray, right_gray)`
+
 ## SGBM Tuning Guide (RK3588)
 
 - Start with `--num-disp 96` or `--num-disp 128`.

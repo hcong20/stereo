@@ -19,7 +19,8 @@ from stereo_vision.camera import CameraConfig, StereoCamera
 from stereo_vision.depth import DepthConfig, DepthEstimator
 from stereo_vision.disparity import SGBMConfig, StereoDisparityEstimator
 from stereo_vision.filters import DistanceFilter, TemporalFilterConfig
-from stereo_vision.optimization import RuntimeOptimizationConfig, crop_for_disparity, fast_resize
+from stereo_vision.optimization import RuntimeOptimizationConfig, crop_for_disparity
+from stereo_vision.preprocess import FramePreprocessor, PreprocessConfig
 from stereo_vision.rectification import build_rectification_maps, rectify_pair
 from stereo_vision.roi import ROI, robust_roi_distance
 from stereo_vision.visualization import VizState, colorize_disparity, draw_roi, draw_text, register_click
@@ -69,6 +70,18 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--scale", type=float, default=1.0)
+    parser.add_argument(
+        "--preprocess-backend",
+        choices=["auto", "cpu", "rga"],
+        default="auto",
+        help="Frame preprocess backend (RGA requires external module)",
+    )
+    parser.add_argument(
+        "--rga-module",
+        type=str,
+        default="rga_helper",
+        help="Python module name providing RGA preprocess_pair_bgr_to_gray",
+    )
     parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")
     parser.add_argument("--roi-disparity-only", action="store_true")
 
@@ -299,6 +312,14 @@ def main() -> None:
         scale=scale,
         disparity_roi_only=bool(args.roi_disparity_only),
     )
+    preprocessor = FramePreprocessor(
+        PreprocessConfig(
+            scale=runtime_cfg.scale,
+            backend=str(args.preprocess_backend),
+            rga_module=str(args.rga_module),
+        )
+    )
+    print(f"[INFO] preprocess_backend={preprocessor.backend_name}")
 
     swap_lr = bool(args.swap_lr)
     viz_state = VizState()
@@ -322,12 +343,8 @@ def main() -> None:
             # 2) Geometric rectification.
             left_rect, right_rect = rectify_pair(left, right, rect)
 
-            # 3) Runtime resize for performance/latency trade-off.
-            left_rect = fast_resize(left_rect, runtime_cfg.scale)
-            right_rect = fast_resize(right_rect, runtime_cfg.scale)
-
-            gray_l = to_gray(left_rect)
-            gray_r = to_gray(right_rect)
+            # 3) Runtime preprocess (resize + grayscale), optionally RGA-backed.
+            left_rect, right_rect, gray_l, gray_r = preprocessor.process(left_rect, right_rect)
 
             roi_scaled = ROI(
                 x=int(roi.x * runtime_cfg.scale),
