@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from stereo_vision.calibration import load_stereo_calibration
-from stereo_vision.camera import CameraConfig, StereoCamera
+from stereo_vision.camera import CameraConfig, MultiStereoCamera, StereoCamera
 from stereo_vision.depth import DepthConfig, DepthEstimator
 from stereo_vision.disparity import SGBMConfig, StereoDisparityEstimator
 from stereo_vision.filters import DistanceFilter, TemporalFilterConfig
@@ -57,10 +57,37 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RK3588 Stereo Distance Measurement")
 
     parser.add_argument("--device", default="/dev/video20")
+    parser.add_argument(
+        "--devices",
+        default="",
+        help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
+    )
+    parser.add_argument(
+        "--active-input",
+        type=int,
+        default=1,
+        help="1-based input index selected at startup when --devices is used",
+    )
+    parser.add_argument(
+        "--switch-timeout-ms",
+        type=float,
+        default=500.0,
+        help="Max wait for frame from selected input after switching",
+    )
     parser.add_argument("--calib", default="stereo_calib_params.npz")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--capture-mode",
+        choices=["auto", "parallel", "single-active"],
+        default="auto",
+        help=(
+            "Multi-input capture strategy: parallel opens all inputs concurrently; "
+            "single-active keeps only selected input streaming; auto prefers parallel and "
+            "falls back to single-active when parallel availability is poor."
+        ),
+    )
     parser.add_argument("--gstreamer", action="store_true")
     parser.add_argument("--swap-lr", action="store_true", help="Swap left/right camera halves")
     parser.add_argument(
@@ -81,6 +108,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="rga_helper",
         help="Python module name providing RGA preprocess_pair_bgr_to_gray",
+    )
+    parser.add_argument(
+        "--allow-unsafe-rga-multicam",
+        action="store_true",
+        help=(
+            "Allow RGA preprocess in multi-camera mode. "
+            "Disabled by default because some RGA stacks can hang the system during source switching."
+        ),
     )
     parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")
     parser.add_argument("--roi-disparity-only", action="store_true")
@@ -203,6 +238,29 @@ def fourcc_to_str(fourcc_value: float) -> str:
     return "".join([chr((code >> (8 * i)) & 0xFF) for i in range(4)])
 
 
+def decode_switch_index(key_raw: int, source_count: int) -> Optional[int]:
+    """Decode input-switch index from OpenCV key code.
+
+    Supports both top-row digits and keypad digits reported by waitKeyEx.
+    Returns a zero-based camera index, or None when key is not a switch key.
+    """
+    if source_count <= 0 or key_raw < 0:
+        return None
+
+    # Standard ASCII digits from top keyboard row.
+    low = key_raw & 0xFF
+    if ord("1") <= low <= ord("9"):
+        idx = int(low - ord("1"))
+        return idx if idx < source_count else None
+
+    # X11 keypad keys (Linux): XK_KP_1..XK_KP_9 (0xFFB1..0xFFB9).
+    if 0xFFB1 <= key_raw <= 0xFFB9:
+        idx = int(key_raw - 0xFFB1)
+        return idx if idx < source_count else None
+
+    return None
+
+
 def main() -> None:
     """Run the full stereo pipeline loop and render diagnostic overlays.
 
@@ -212,32 +270,134 @@ def main() -> None:
     """
     args = parse_args()
 
-    cam = StereoCamera(
+    device_list = [d.strip() for d in str(args.devices).split(",") if d.strip()]
+    if len(device_list) == 0:
+        device_list = [str(args.device)]
+    if len(device_list) != 4:
+        print(
+            f"[WARN] Expected 4 stereo inputs for deployment goal, got {len(device_list)}. "
+            "System will run with available inputs."
+        )
+
+    switch_timeout_s = max(0.05, float(args.switch_timeout_ms) / 1000.0)
+    multi_mode = len(device_list) > 1
+    cam: Optional[MultiStereoCamera | StereoCamera] = None
+    active_idx = 0
+
+    cam_cfgs = [
         CameraConfig(
-            device=args.device,
+            device=device,
             width=args.width,
             height=args.height,
             fps=args.fps,
             use_gstreamer=args.gstreamer,
         )
-    )
+        for device in device_list
+    ]
+    requested_idx = max(0, min(int(args.active_input) - 1, len(device_list) - 1))
+
+    try:
+        if multi_mode:
+            capture_mode = str(args.capture_mode)
+            single_active_mode = capture_mode == "single-active"
+            cam = MultiStereoCamera(
+                cam_cfgs,
+                single_active_mode=single_active_mode,
+                initial_active_index=requested_idx,
+            )
+            cam.start(stagger_s=0.15)
+            if requested_idx != int(args.active_input) - 1:
+                print(
+                    "[WARN] --active-input is out of range; "
+                    f"clamped to {requested_idx + 1}/{len(device_list)}"
+                )
+
+            def print_source_statuses(tag: str) -> None:
+                statuses = cam.source_statuses()
+                print(f"[INFO] {tag} source status:")
+                for st in statuses:
+                    age_text = "N/A" if st["frame_age_ms"] is None else f"{st['frame_age_ms']:.0f}ms"
+                    err_text = st["last_error"] if st["last_error"] else "-"
+                    print(
+                        "[INFO] "
+                        f"input={st['index'] + 1} dev={st['device']} has_frame={st['has_frame']} "
+                        f"age={age_text} frame_id={st['frame_id']} err={err_text}"
+                    )
+
+            try:
+                left0, right0, _, _, active_idx = cam.read(
+                    timeout_s=max(8.0, switch_timeout_s * 4.0),
+                    allow_fallback=False,
+                )
+            except RuntimeError as exc:
+                print(
+                    "[WARN] Requested startup input has no frame; "
+                    f"requested={requested_idx + 1}, reason={exc}"
+                )
+                print_source_statuses("startup")
+
+                if capture_mode == "auto":
+                    statuses = cam.source_statuses()
+                    ready_count = sum(1 for st in statuses if st["has_frame"])
+                    if ready_count <= 1:
+                        print(
+                            "[WARN] Parallel capture appears constrained "
+                            f"(ready_inputs={ready_count}/{len(statuses)}). "
+                            "Auto-switching to single-active capture mode."
+                        )
+                        cam.release()
+                        time.sleep(0.2)
+                        cam = MultiStereoCamera(
+                            cam_cfgs,
+                            single_active_mode=True,
+                            initial_active_index=requested_idx,
+                        )
+                        cam.start(stagger_s=0.0)
+
+                left0, right0, _, _, active_idx = cam.read(
+                    timeout_s=max(10.0, switch_timeout_s * 4.0),
+                    allow_fallback=True,
+                )
+                print(
+                    "[WARN] Startup fallback applied: "
+                    f"requested={requested_idx + 1}, using={active_idx + 1}"
+                )
+
+            print(
+                f"[INFO] Multi-input mode enabled: inputs={len(device_list)}, "
+                f"active={active_idx + 1}, devices={device_list}"
+            )
+            print(f"[INFO] capture_mode={args.capture_mode}, single_active_mode={cam.single_active_mode}")
+        else:
+            cam = StereoCamera(cam_cfgs[0])
+            cam.open()
+            left0, right0, _ = cam.read()
+            active_idx = 0
+    except Exception:
+        if cam is not None:
+            cam.release()
+        raise
+
     calib = load_stereo_calibration(args.calib)
 
     # Prime the camera once to discover frame geometry and stream properties.
-    cam.open()
-    left0, right0, _ = cam.read()
     image_size = (left0.shape[1], left0.shape[0])
 
-    cap = cam.cap
-    if cap is not None:
-        stream_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        stream_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        stream_fps = float(cap.get(cv2.CAP_PROP_FPS))
-        stream_fourcc = fourcc_to_str(cap.get(cv2.CAP_PROP_FOURCC))
+    if multi_mode:
         print(
-            f"[INFO] Video stream: {stream_w}x{stream_h}, "
-            f"FPS={stream_fps:.2f}, FOURCC={stream_fourcc}"
+            f"[INFO] Active input device: idx={active_idx + 1}, device={device_list[active_idx]}"
         )
+    else:
+        cap = cam.cap
+        if cap is not None:
+            stream_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            stream_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            stream_fps = float(cap.get(cv2.CAP_PROP_FPS))
+            stream_fourcc = fourcc_to_str(cap.get(cv2.CAP_PROP_FOURCC))
+            print(
+                f"[INFO] Video stream: {stream_w}x{stream_h}, "
+                f"FPS={stream_fps:.2f}, FOURCC={stream_fourcc}"
+            )
 
     # Build remap tables once; remapping is then cheap per frame.
     rect = build_rectification_maps(
@@ -312,10 +472,18 @@ def main() -> None:
         scale=scale,
         disparity_roi_only=bool(args.roi_disparity_only),
     )
+    preprocess_backend = str(args.preprocess_backend)
+    if multi_mode and preprocess_backend != "cpu" and not bool(args.allow_unsafe_rga_multicam):
+        print(
+            "[WARN] Multi-camera mode detected: forcing preprocess backend to CPU "
+            "to avoid RGA switch instability. Use --allow-unsafe-rga-multicam to override."
+        )
+        preprocess_backend = "cpu"
+
     preprocessor = FramePreprocessor(
         PreprocessConfig(
             scale=runtime_cfg.scale,
-            backend=str(args.preprocess_backend),
+            backend=preprocess_backend,
             rga_module=str(args.rga_module),
         )
     )
@@ -328,16 +496,58 @@ def main() -> None:
     win = "stereo_distance"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     register_click(win, viz_state)
+    print("[INFO] Keyboard control is captured by the video window. Click the window before pressing 1-4/n/q.")
 
     perf = PerfStats()
     window_sized = False
     screen_size = get_screen_size()
+    last_switch_latency_ms: Optional[float] = None
+    switch_pending: Optional[tuple[int, float]] = None
+    read_timeout_idle_s = min(0.03, switch_timeout_s)
+    read_timeout_switch_s = min(0.08, switch_timeout_s)
+
+    def read_active_frame() -> tuple[np.ndarray, np.ndarray, float, int]:
+        """Read current active source frame and return source index for overlays."""
+        if multi_mode:
+            min_ts = 0.0
+            timeout = read_timeout_idle_s
+            if switch_pending is not None:
+                _, pending_t0 = switch_pending
+                min_ts = pending_t0
+                timeout = read_timeout_switch_s
+            l, r, ts, _, idx = cam.read(
+                timeout_s=timeout,
+                min_timestamp_s=min_ts,
+                allow_fallback=True,
+            )
+            return l, r, ts, idx
+        l, r, ts = cam.read()
+        return l, r, ts, 0
 
     try:
         while True:
             t0 = time.perf_counter()
             # 1) Capture and optional channel swap.
-            left, right, _ = cam.read()
+            left, right, frame_ts, active_idx = read_active_frame()
+            if switch_pending is not None:
+                pending_idx, pending_t0 = switch_pending
+                if pending_idx == active_idx and frame_ts >= pending_t0:
+                    last_switch_latency_ms = (time.perf_counter() - pending_t0) * 1000.0
+                    switch_pending = None
+                elif (time.perf_counter() - pending_t0) >= switch_timeout_s:
+                    # Target source did not deliver a fresh frame in time.
+                    # Keep showing available stream and clear pending state.
+                    cam.switch_to(active_idx)
+                    statuses = cam.source_statuses()
+                    target = statuses[pending_idx]
+                    age_text = "N/A" if target["frame_age_ms"] is None else f"{target['frame_age_ms']:.0f}ms"
+                    err_text = target["last_error"] if target["last_error"] else "-"
+                    print(
+                        "[WARN] Switch timed out: "
+                        f"requested_input={pending_idx + 1}, fallback_input={active_idx + 1}, "
+                        f"target_has_frame={target['has_frame']}, target_age={age_text}, target_err={err_text}"
+                    )
+                    switch_pending = None
             if swap_lr:
                 left, right = right, left
 
@@ -418,27 +628,56 @@ def main() -> None:
             left_viz = draw_text(left_viz, f"Latency: {latency_ms:.1f} ms", (10, 90), (255, 255, 0))
             left_viz = draw_text(
                 left_viz,
-                f"ROI valid: {valid_pixels}/{total_pixels}",
+                f"Input: {active_idx + 1}/{len(device_list)} ({device_list[active_idx]})",
                 (10, 120),
+                (255, 255, 0),
+            )
+            if last_switch_latency_ms is not None:
+                left_viz = draw_text(
+                    left_viz,
+                    f"Switch latency: {last_switch_latency_ms:.1f} ms",
+                    (10, 150),
+                    (200, 255, 200),
+                )
+            elif switch_pending is not None:
+                pending_idx, pending_t0 = switch_pending
+                pending_ms = (time.perf_counter() - pending_t0) * 1000.0
+                left_viz = draw_text(
+                    left_viz,
+                    f"Switching to input {pending_idx + 1}: {pending_ms:.0f} ms",
+                    (10, 150),
+                    (0, 215, 255),
+                )
+            else:
+                left_viz = draw_text(
+                    left_viz,
+                    "Switch latency: N/A",
+                    (10, 150),
+                    (255, 255, 0),
+                )
+            left_viz = draw_text(
+                left_viz,
+                f"ROI valid: {valid_pixels}/{total_pixels}",
+                (10, 180),
                 (255, 255, 0),
             )
             left_viz = draw_text(
                 left_viz,
                 f"ROI disp>0: {positive_disp_pixels}/{total_pixels}",
-                (10, 150),
+                (10, 210),
                 (255, 255, 0),
             )
             left_viz = draw_text(
                 left_viz,
                 f"ROI clipped(maxD): {clipped_by_max_depth}",
-                (10, 180),
+                (10, 240),
                 (255, 255, 0),
             )
 
             if distance_raw is not None:
-                left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 210), (200, 255, 200))
+                left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 270), (200, 255, 200))
             else:
-                left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 210), (0, 0, 255))
+                left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 270), (0, 0, 255))
 
             # Optional per-pixel inspection from last mouse click.
             if viz_state.clicked_px is not None:
@@ -447,9 +686,9 @@ def main() -> None:
                     cv2.circle(left_viz, (cx, cy), 5, (0, 0, 255), -1, cv2.LINE_AA)
                 click_depth: Optional[float] = depth_estimator.depth_at(depth_map, cx, cy)
                 if click_depth is not None:
-                    left_viz = draw_text(left_viz, f"Click({cx},{cy}): {click_depth * 1000.0:.1f} mm", (10, 240), (255, 200, 0))
+                    left_viz = draw_text(left_viz, f"Click({cx},{cy}): {click_depth * 1000.0:.1f} mm", (10, 300), (255, 200, 0))
                 else:
-                    left_viz = draw_text(left_viz, f"Click({cx},{cy}): N/A", (10, 240), (0, 0, 255))
+                    left_viz = draw_text(left_viz, f"Click({cx},{cy}): N/A", (10, 300), (0, 0, 255))
 
             stack = np.hstack([left_viz, disp_vis])
             if not window_sized:
@@ -463,15 +702,27 @@ def main() -> None:
                 window_sized = True
             cv2.imshow(win, stack)
 
-            # Keyboard shortcuts: s toggles left/right swap, q/esc exits.
-            key = cv2.waitKey(1) & 0xFF
+            # Keyboard shortcuts: s toggles left/right swap, 1-9 switches input, n selects next input, q/esc exits.
+            key_raw = cv2.waitKeyEx(1)
+            key = key_raw & 0xFF
             if key == ord("s"):
                 swap_lr = not swap_lr
+
+            if multi_mode:
+                req_idx = decode_switch_index(key_raw, len(device_list))
+                if req_idx is not None:
+                    active_applied = cam.switch_to(req_idx)
+                    switch_pending = (active_applied, time.perf_counter())
+
+            if multi_mode and key == ord("n"):
+                active_applied = cam.switch_to((active_idx + 1) % len(device_list))
+                switch_pending = (active_applied, time.perf_counter())
             if key == 27 or key == ord("q"):
                 break
 
     finally:
-        cam.release()
+        if cam is not None:
+            cam.release()
         cv2.destroyAllWindows()
 
 

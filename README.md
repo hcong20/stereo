@@ -13,6 +13,7 @@ Production-oriented stereo distance measurement pipeline for RK3588 (Ubuntu 22.0
 - Temporal stabilization (median + EMA + outlier rejection)
 - Real-time visualization, latency/FPS monitor, click-to-measure
 - Optional GStreamer capture path and ROI-only disparity mode
+- Multi-input pre-opened capture with single active stereo pipeline
 
 ## Project Structure
 
@@ -41,6 +42,31 @@ sudo apt install -y python3-opencv python3-numpy v4l-utils gstreamer1.0-tools \
 
 ```bash
 python3 main.py --device /dev/video0 --calib stereo_calib_params.npz --fps 30
+```
+
+4-input deployment mode (single active pipeline, runtime switching):
+
+```bash
+python3 main.py \
+  --devices /dev/video20,/dev/video22,/dev/video24,/dev/video26 \
+  --active-input 1 \
+  --switch-timeout-ms 500 \
+  --capture-mode auto \
+  --calib stereo_calib_params.npz \
+  --fps 30
+```
+
+If your hardware cannot stream all camera nodes in parallel (common on shared USB hubs),
+use single-active capture mode:
+
+```bash
+python3 main.py \
+  --devices /dev/video20,/dev/video22,/dev/video24,/dev/video26 \
+  --active-input 2 \
+  --switch-timeout-ms 500 \
+  --capture-mode single-active \
+  --calib stereo_calib_params.npz \
+  --fps 30
 ```
 
 ## Build Executable (Ubuntu 22.04)
@@ -163,11 +189,14 @@ Python OpenCV does not expose RGA directly. For best RK3588 performance:
 
 ## Multi-Camera Switching (< 500ms)
 
-- Pre-open all candidate camera devices in background threads.
-- Keep one active processing pipeline and hot-swap frame source pointer.
-- Maintain independent frame queues per camera (`maxlen=1`).
-- Warm up each camera stream ahead of switching.
-- Trigger switch on next frame boundary to keep transition deterministic.
+- Start with `--devices` and pass 4 camera nodes in fixed order.
+- All inputs are opened in background capture threads and continuously refreshed.
+- Only one stereo processing pipeline runs per frame (active input only).
+- Press `1`, `2`, `3`, `4` to switch directly to each input.
+- Press `n` to switch to next input cyclically.
+- Overlay shows current input and measured switch latency (`Switch latency: ... ms`).
+- `--switch-timeout-ms` defaults to `500`, matching the system latency target.
+- `--capture-mode auto` prefers parallel capture and auto-falls back to `single-active` when only one input is producing frames.
 
 ## Optional C++ Optimization Path
 

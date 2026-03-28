@@ -43,6 +43,7 @@ class FramePreprocessor:
         self.cfg = cfg
         self._rga_backend: Optional[RGABackendProtocol] = None
         self._backend_reason: str = ""
+        self._runtime_fallback_logged = False
         self._resolved_backend = self._resolve_backend()
 
     @property
@@ -109,6 +110,21 @@ class FramePreprocessor:
         nh = max(1, int(h * scale))
         return cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
 
+    @staticmethod
+    def _prepare_rga_input(frame: np.ndarray) -> np.ndarray:
+        """Normalize input layout for RGA backend calls.
+
+        Some backend bindings require contiguous uint8 BGR memory.
+        """
+        out = frame
+        if out.dtype != np.uint8:
+            out = out.astype(np.uint8, copy=False)
+        if out.ndim != 3 or out.shape[2] != 3:
+            raise ValueError(f"RGA expects BGR image with shape HxWx3, got {out.shape}")
+        if not out.flags.c_contiguous:
+            out = np.ascontiguousarray(out)
+        return out
+
     def process(
         self, left_bgr: np.ndarray, right_bgr: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -118,9 +134,19 @@ class FramePreprocessor:
             (left_resized_bgr, right_resized_bgr, left_gray, right_gray)
         """
         if self._resolved_backend == "rga" and self._rga_backend is not None:
-            return self._rga_backend.preprocess_pair_bgr_to_gray(
-                left_bgr, right_bgr, float(self.cfg.scale)
-            )
+            try:
+                left_in = self._prepare_rga_input(left_bgr)
+                right_in = self._prepare_rga_input(right_bgr)
+                return self._rga_backend.preprocess_pair_bgr_to_gray(
+                    left_in, right_in, float(self.cfg.scale)
+                )
+            except Exception as exc:
+                # Keep real-time pipeline alive when RGA runtime errors happen.
+                self._resolved_backend = "cpu"
+                self._backend_reason = f"runtime fallback to CPU after RGA error: {exc}"
+                if not self._runtime_fallback_logged:
+                    print(f"[WARN] {self._backend_reason}")
+                    self._runtime_fallback_logged = True
 
         left_resized = self._cpu_resize(left_bgr, float(self.cfg.scale))
         right_resized = self._cpu_resize(right_bgr, float(self.cfg.scale))
