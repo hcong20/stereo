@@ -23,12 +23,30 @@ class StartupResult:
     right0: np.ndarray
 
 
+def _parse_bus_groups(text: str, source_count: int) -> Optional[list[str]]:
+    """Parse bus/group labels provided as comma-separated text."""
+    raw = str(text).strip()
+    if raw == "":
+        return None
+    groups = [part.strip() for part in raw.split(",") if part.strip() != ""]
+    if len(groups) != int(source_count):
+        raise ValueError(
+            "--bus-groups count must match number of inputs: "
+            f"got {len(groups)} labels for {source_count} devices"
+        )
+    return groups
+
+
 def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> StartupResult:
     """Initialize capture based on CLI settings and return first valid stereo frame."""
     switch_timeout_s = max(0.05, float(args.switch_timeout_ms) / 1000.0)
     multi_mode = len(device_list) > 1
     cam: Optional[MultiStereoCamera | StereoCamera] = None
     active_idx = 0
+    bus_groups = _parse_bus_groups(getattr(args, "bus_groups", ""), len(device_list))
+    keep_one_live_per_group = bool(getattr(args, "keep_one_live_per_group", False))
+    if bus_groups is not None and not keep_one_live_per_group:
+        keep_one_live_per_group = True
 
     cam_cfgs = [
         CameraConfig(
@@ -51,6 +69,8 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                 cam_cfgs,
                 single_active_mode=single_active_mode,
                 initial_active_index=requested_idx,
+                group_ids=bus_groups,
+                keep_one_live_per_group=keep_one_live_per_group,
             )
             cam.start(stagger_s=0.15)
             if requested_idx != int(args.active_input) - 1:
@@ -68,6 +88,7 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                     print(
                         "[INFO] "
                         f"input={st['index'] + 1} dev={st['device']} has_frame={st['has_frame']} "
+                        f"group={st.get('group', '-')} group_live={st.get('group_live', False)} "
                         f"age={age_text} frame_id={st['frame_id']} err={err_text}"
                     )
 
@@ -98,6 +119,8 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                             cam_cfgs,
                             single_active_mode=True,
                             initial_active_index=requested_idx,
+                            group_ids=bus_groups,
+                            keep_one_live_per_group=keep_one_live_per_group,
                         )
                         cam.start(stagger_s=0.0)
 
@@ -137,8 +160,15 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                 f"active={active_idx + 1}, devices={device_list}"
             )
             print(f"[INFO] capture_mode={args.capture_mode}, single_active_mode={cam.single_active_mode}")
+            if bus_groups is not None:
+                print(
+                    "[INFO] bus_groups="
+                    f"{bus_groups}, keep_one_live_per_group={cam.group_live_mode}"
+                )
 
-            if cam.single_active_mode and not bool(args.skip_prewarm_inputs):
+            if cam.single_active_mode and cam.group_live_mode and not bool(args.skip_prewarm_inputs):
+                print("[INFO] Group-live mode active: skipping prewarm to preserve one-live-per-group layout")
+            elif cam.single_active_mode and not bool(args.skip_prewarm_inputs):
                 prewarm_timeout_s = max(3.0, switch_timeout_s)
                 active_start_idx = active_idx
                 print(

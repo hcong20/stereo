@@ -2,7 +2,7 @@
 
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -18,6 +18,8 @@ class MultiStereoCamera:
         configs: List[CameraConfig],
         single_active_mode: bool = False,
         initial_active_index: int = 0,
+        group_ids: Optional[List[str]] = None,
+        keep_one_live_per_group: bool = False,
     ):
         if len(configs) == 0:
             raise ValueError("At least one camera config is required")
@@ -31,9 +33,43 @@ class MultiStereoCamera:
         self._active_idx = max(0, min(int(initial_active_index), len(self.sources) - 1))
         self._active_lock = threading.Lock()
         self.single_active_mode = bool(single_active_mode)
+        if group_ids is not None and len(group_ids) != len(self.sources):
+            raise ValueError("group_ids length must match number of sources")
+        if group_ids is None:
+            self.group_ids: List[str] = [str(i) for i in range(len(self.sources))]
+        else:
+            self.group_ids = [str(g) for g in group_ids]
+        self._group_to_indices: Dict[str, List[int]] = {}
+        self._index_slot: Dict[int, int] = {}
+        for src_idx, group in enumerate(self.group_ids):
+            self._group_to_indices.setdefault(group, []).append(src_idx)
+        for group, indices in self._group_to_indices.items():
+            for slot, src_idx in enumerate(indices):
+                self._index_slot[src_idx] = slot
+        self.group_live_mode = bool(self.single_active_mode and keep_one_live_per_group and group_ids is not None)
+        self._group_live_index: Dict[str, int] = {}
         self._switch_lock = threading.Lock()
         self._pending_switch: Optional[dict] = None
         self._last_switch_breakdown: Optional[dict] = None
+
+    def _group_of(self, index: int) -> str:
+        idx = max(0, min(int(index), len(self.sources) - 1))
+        return self.group_ids[idx]
+
+    def _aligned_live_indices(self, reference_index: int) -> Dict[str, int]:
+        """Pick one live source per group aligned by intra-group slot.
+
+        Example for groups [0,0,2,2]:
+            slot 0 -> (1,3)
+            slot 1 -> (2,4)
+        """
+        ref_idx = max(0, min(int(reference_index), len(self.sources) - 1))
+        ref_slot = self._index_slot.get(ref_idx, 0)
+        out: Dict[str, int] = {}
+        for group, indices in self._group_to_indices.items():
+            slot = ref_slot if ref_slot < len(indices) else len(indices) - 1
+            out[group] = indices[slot]
+        return out
 
     @property
     def source_count(self) -> int:
@@ -45,6 +81,12 @@ class MultiStereoCamera:
         A small stagger avoids burst-open contention on USB/V4L2 stacks.
         """
         if self.single_active_mode:
+            if self.group_live_mode:
+                grouped = self._aligned_live_indices(self.active_index())
+                self._group_live_index = dict(grouped)
+                for src_idx in sorted(set(grouped.values())):
+                    self.sources[src_idx].start()
+                return
             self.sources[self.active_index()].start()
             return
 
@@ -68,7 +110,34 @@ class MultiStereoCamera:
             target_prev_frame_id = int(target_latest[3])
         _, _, target_open_count_before = self.sources[idx].get_open_stats()
 
-        if self.single_active_mode and idx != old_idx:
+        if self.single_active_mode and idx != old_idx and self.group_live_mode:
+            target_group_live = self._aligned_live_indices(idx)
+
+            to_stop = []
+            for group, current_live in self._group_live_index.items():
+                target_live = target_group_live.get(group)
+                if target_live is not None and current_live != target_live:
+                    to_stop.append(current_live)
+
+            t_stop0 = time.perf_counter()
+            for src_idx in sorted(set(to_stop)):
+                self.sources[src_idx].stop(wait=True, join_timeout_s=0.03, release_device=True)
+            stop_ms = (time.perf_counter() - t_stop0) * 1000.0
+
+            to_start = []
+            for group, target_live in target_group_live.items():
+                if self._group_live_index.get(group) != target_live:
+                    to_start.append(target_live)
+
+            t_start0 = time.perf_counter()
+            for src_idx in sorted(set(to_start)):
+                self.sources[src_idx].start()
+            start_call_ms = (time.perf_counter() - t_start0) * 1000.0
+
+            self._group_live_index = dict(target_group_live)
+            with self._active_lock:
+                self._active_idx = idx
+        elif self.single_active_mode and idx != old_idx:
             # On constrained USB links, stop old source first so target source
             # can acquire bus bandwidth and deliver frames reliably.
             t_stop0 = time.perf_counter()
@@ -121,6 +190,8 @@ class MultiStereoCamera:
                 {
                     "index": idx,
                     "device": src.cfg.device,
+                    "group": self._group_of(idx),
+                    "group_live": bool(self.group_live_mode and self._group_live_index.get(self._group_of(idx)) == idx),
                     "has_frame": has_frame,
                     "frame_age_ms": frame_age_ms,
                     "frame_id": frame_id,
