@@ -7,7 +7,8 @@ from typing import Optional
 
 import numpy as np
 
-from stereo_vision.camera import CameraConfig, MultiStereoCamera, StereoCamera
+from stereo_vision.camera_multi import MultiStereoCamera
+from stereo_vision.camera_single import CameraConfig, StereoCamera
 
 
 @dataclass
