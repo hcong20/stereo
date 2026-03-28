@@ -1,0 +1,9 @@
+# Runtime dependencies
+numpy>=1.21
+opencv-python>=4.8
+
+# Build/packaging tool used by build.sh
+pyinstaller>=6.0
+
+# Optional: required only when building native_rga backend
+pybind11>=2.11
