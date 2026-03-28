@@ -65,6 +65,7 @@ python3 main.py \
   --active-input 2 \
   --switch-timeout-ms 500 \
   --capture-mode single-active \
+  --warmup-frames 1 \
   --calib stereo_calib_params.npz \
   --fps 30
 ```
@@ -197,6 +198,7 @@ Python OpenCV does not expose RGA directly. For best RK3588 performance:
 - Overlay shows current input and measured switch latency (`Switch latency: ... ms`).
 - `--switch-timeout-ms` defaults to `500`, matching the system latency target.
 - `--capture-mode auto` prefers parallel capture and auto-falls back to `single-active` when only one input is producing frames.
+- `--warmup-frames` reduces camera-open settling time; use `1` for lower switch latency.
 
 ## Optional C++ Optimization Path
 

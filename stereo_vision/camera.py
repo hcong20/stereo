@@ -32,7 +32,8 @@ class CameraConfig:
     fps: int = 30
     use_gstreamer: bool = False
     gstreamer_pipeline: Optional[str] = None
-    warmup_frames: int = 5
+    warmup_frames: int = 1
+    fast_reopen: bool = True
 
 
 def build_usb_gstreamer_pipeline(device: str, width: int, height: int, fps: int) -> str:
@@ -60,6 +61,7 @@ class StereoCamera:
         self.cfg = cfg
         self.cap: Optional[cv2.VideoCapture] = None
         self.last_ts: float = 0.0
+        self._configured_once = False
 
     def open(self) -> None:
         """Open camera stream and warm it up before first use.
@@ -67,6 +69,7 @@ class StereoCamera:
         Raises:
             RuntimeError: If camera cannot be opened.
         """
+        was_configured = self._configured_once
         if self.cfg.use_gstreamer:
             pipeline = self.cfg.gstreamer_pipeline or build_usb_gstreamer_pipeline(
                 self.cfg.device, self.cfg.width, self.cfg.height, self.cfg.fps
@@ -74,17 +77,23 @@ class StereoCamera:
             self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         else:
             self.cap = cv2.VideoCapture(self.cfg.device, cv2.CAP_V4L2)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
-            self.cap.set(cv2.CAP_PROP_FPS, self.cfg.fps)
+            if (not bool(self.cfg.fast_reopen)) or (not was_configured):
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
+                self.cap.set(cv2.CAP_PROP_FPS, self.cfg.fps)
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                self._configured_once = True
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
 
         if self.cap is None or not self.cap.isOpened():
             raise RuntimeError("Failed to open stereo camera")
 
         # Drop initial frames so exposure/auto-controls stabilize.
-        for _ in range(max(0, self.cfg.warmup_frames)):
+        warmup = max(0, int(self.cfg.warmup_frames))
+        if bool(self.cfg.fast_reopen) and was_configured:
+            # On reopen, skipping warmup reduces switch delay significantly.
+            warmup = 0
+        for _ in range(warmup):
             self.cap.read()
 
     def read(self) -> Tuple[np.ndarray, np.ndarray, float]:
@@ -127,31 +136,56 @@ class BufferedStereoCamera:
     without blocking on camera I/O.
     """
 
-    def __init__(self, cfg: CameraConfig, name: Optional[str] = None):
+    def __init__(
+        self,
+        cfg: CameraConfig,
+        name: Optional[str] = None,
+    ):
         self.cfg = cfg
         self.name = name or cfg.device
         self._camera = StereoCamera(cfg)
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._state_lock = threading.Lock()
         self._lock = threading.Lock()
         self._latest: Optional[Tuple[np.ndarray, np.ndarray, float, int]] = None
         self._frame_id = 0
         self._last_error: Optional[str] = None
+        self._last_open_ms: float = 0.0
+        self._last_open_ts: float = 0.0
+        self._open_count: int = 0
 
     def start(self) -> None:
         """Start background capture loop."""
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._reader_loop, name=f"cam:{self.name}", daemon=True)
-        self._thread.start()
+        with self._state_lock:
+            if self._running:
+                return
+
+            # If a previous thread is still winding down, try to reuse it by
+            # cancelling the stop request. This avoids missing rapid re-switches.
+            if self._thread is not None and self._thread.is_alive():
+                self._running = True
+                self._thread.join(timeout=0.03)
+                if self._thread.is_alive():
+                    return
+                self._thread = None
+
+            self._running = True
+            self._thread = threading.Thread(target=self._reader_loop, name=f"cam:{self.name}", daemon=True)
+            self._thread.start()
 
     def _reader_loop(self) -> None:
         """Read frames continuously; auto-reopen on transient capture failures."""
         while self._running:
             try:
                 if self._camera.cap is None:
+                    t_open0 = time.perf_counter()
                     self._camera.open()
+                    open_ms = (time.perf_counter() - t_open0) * 1000.0
+                    with self._lock:
+                        self._last_open_ms = open_ms
+                        self._last_open_ts = time.perf_counter()
+                        self._open_count += 1
                 left, right, ts = self._camera.read()
                 self._frame_id += 1
                 with self._lock:
@@ -163,6 +197,9 @@ class BufferedStereoCamera:
                 self._camera.release()
                 time.sleep(0.1)
 
+        # Release from capture thread context when a non-blocking stop is used.
+        self._camera.release()
+
     def get_latest(self) -> Optional[Tuple[np.ndarray, np.ndarray, float, int]]:
         """Return latest captured stereo pair and monotonically increasing frame id."""
         with self._lock:
@@ -173,13 +210,48 @@ class BufferedStereoCamera:
         with self._lock:
             return self._last_error
 
-    def stop(self) -> None:
-        """Stop background loop and release camera resources."""
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-            self._thread = None
-        self._camera.release()
+    def get_open_stats(self) -> tuple[float, float, int]:
+        """Return (last_open_ms, last_open_ts, open_count)."""
+        with self._lock:
+            return self._last_open_ms, self._last_open_ts, self._open_count
+
+    def is_running(self) -> bool:
+        """Return whether capture loop is currently requested to run."""
+        with self._state_lock:
+            return self._running
+
+    def is_thread_alive(self) -> bool:
+        """Return whether background thread object is alive."""
+        with self._state_lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def stop(
+        self,
+        wait: bool = True,
+        join_timeout_s: float = 1.0,
+        release_device: bool = False,
+    ) -> None:
+        """Stop background loop.
+
+        Args:
+            wait: When False, request stop and return immediately.
+            join_timeout_s: Max join wait when wait is True.
+            release_device: Force releasing capture handle after stop.
+        """
+        with self._state_lock:
+            self._running = False
+            thread = self._thread
+
+        if wait and thread is not None:
+            thread.join(timeout=max(0.0, float(join_timeout_s)))
+            thread_alive = thread.is_alive()
+            with self._state_lock:
+                if self._thread is thread and not thread_alive:
+                    self._thread = None
+            # Only release from caller thread when capture thread has stopped.
+            # Otherwise the capture thread will release from its own context.
+            if not thread_alive:
+                self._camera.release()
 
 
 class MultiStereoCamera:
@@ -194,11 +266,18 @@ class MultiStereoCamera:
         if len(configs) == 0:
             raise ValueError("At least one camera config is required")
         self.sources: List[BufferedStereoCamera] = [
-            BufferedStereoCamera(cfg, name=f"{idx}:{cfg.device}") for idx, cfg in enumerate(configs)
+            BufferedStereoCamera(
+                cfg,
+                name=f"{idx}:{cfg.device}",
+            )
+            for idx, cfg in enumerate(configs)
         ]
         self._active_idx = max(0, min(int(initial_active_index), len(self.sources) - 1))
         self._active_lock = threading.Lock()
         self.single_active_mode = bool(single_active_mode)
+        self._switch_lock = threading.Lock()
+        self._pending_switch: Optional[dict] = None
+        self._last_switch_breakdown: Optional[dict] = None
 
     @property
     def source_count(self) -> int:
@@ -223,16 +302,46 @@ class MultiStereoCamera:
         """Switch active source by index and return applied index."""
         idx = max(0, min(int(index), len(self.sources) - 1))
         old_idx = self.active_index()
+        t_switch = time.perf_counter()
+        stop_ms = 0.0
+        start_call_ms = 0.0
+        target_prev_frame_id = -1
+        target_open_count_before = 0
+        target_latest = self.sources[idx].get_latest()
+        if target_latest is not None:
+            target_prev_frame_id = int(target_latest[3])
+        _, _, target_open_count_before = self.sources[idx].get_open_stats()
+
         if self.single_active_mode and idx != old_idx:
-            # Start target source first; stop previous source to avoid
-            # multi-stream bandwidth contention on constrained USB links.
+            # On constrained USB links, stop old source first so target source
+            # can acquire bus bandwidth and deliver frames reliably.
+            t_stop0 = time.perf_counter()
+            self.sources[old_idx].stop(wait=True, join_timeout_s=0.03, release_device=True)
+            stop_ms = (time.perf_counter() - t_stop0) * 1000.0
+
+            t_start0 = time.perf_counter()
             self.sources[idx].start()
+            start_call_ms = (time.perf_counter() - t_start0) * 1000.0
             with self._active_lock:
                 self._active_idx = idx
-            self.sources[old_idx].stop()
         else:
+            t_start0 = time.perf_counter()
             with self._active_lock:
                 self._active_idx = idx
+            start_call_ms = (time.perf_counter() - t_start0) * 1000.0
+
+        if idx != old_idx:
+            with self._switch_lock:
+                self._pending_switch = {
+                    "request_ts": t_switch,
+                    "from_idx": old_idx,
+                    "to_idx": idx,
+                    "stop_ms": stop_ms,
+                    "start_call_ms": start_call_ms,
+                    "target_prev_frame_id": target_prev_frame_id,
+                    "target_open_count_before": target_open_count_before,
+                }
+
         return idx
 
     def active_index(self) -> int:
@@ -260,15 +369,63 @@ class MultiStereoCamera:
                     "frame_age_ms": frame_age_ms,
                     "frame_id": frame_id,
                     "last_error": err,
+                    "running": src.is_running(),
+                    "thread_alive": src.is_thread_alive(),
                 }
             )
         return out
+
+    def get_last_switch_breakdown(self) -> Optional[dict]:
+        """Return latest completed switch timing breakdown.
+
+        Keys:
+            from_idx, to_idx, total_ms, stop_ms, open_ms, first_frame_ms
+        """
+        with self._switch_lock:
+            if self._last_switch_breakdown is None:
+                return None
+            return dict(self._last_switch_breakdown)
+
+    def _maybe_finalize_switch_breakdown(self, source_idx: int, frame_ts: float, frame_id: int) -> None:
+        """Complete pending switch metrics when first valid frame arrives."""
+        with self._switch_lock:
+            pending = self._pending_switch
+            if pending is None:
+                return
+            if int(pending["to_idx"]) != int(source_idx):
+                return
+
+            request_ts = float(pending["request_ts"])
+            prev_id = int(pending["target_prev_frame_id"])
+            if frame_ts < request_ts or int(frame_id) <= prev_id:
+                return
+
+            open_ms, _, open_count = self.sources[source_idx].get_open_stats()
+            open_count_before = int(pending["target_open_count_before"])
+            if open_count <= open_count_before:
+                open_ms = 0.0
+
+            total_ms = (time.perf_counter() - request_ts) * 1000.0
+            stop_ms = float(pending["stop_ms"])
+            first_frame_ms = max(0.0, total_ms - stop_ms - float(open_ms))
+
+            self._last_switch_breakdown = {
+                "from_idx": int(pending["from_idx"]),
+                "to_idx": int(pending["to_idx"]),
+                "total_ms": total_ms,
+                "stop_ms": stop_ms,
+                "open_ms": float(open_ms),
+                "first_frame_ms": first_frame_ms,
+                "start_call_ms": float(pending["start_call_ms"]),
+            }
+            self._pending_switch = None
 
     def read(
         self,
         timeout_s: float = 0.5,
         min_timestamp_s: float = 0.0,
         allow_fallback: bool = True,
+        max_fallback_age_s: float = 0.35,
     ) -> Tuple[np.ndarray, np.ndarray, float, int, int]:
         """Read latest frame from active source.
 
@@ -283,6 +440,7 @@ class MultiStereoCamera:
             if latest is not None:
                 left, right, ts, frame_id = latest
                 if ts >= float(min_timestamp_s):
+                    self._maybe_finalize_switch_breakdown(active_idx, ts, frame_id)
                     return left, right, ts, frame_id, active_idx
             if time.perf_counter() >= deadline:
                 break
@@ -292,15 +450,21 @@ class MultiStereoCamera:
             # Keep pipeline responsive: return freshest frame from any source,
             # but do not overwrite the active selection.
             freshest: Optional[Tuple[int, Tuple[np.ndarray, np.ndarray, float, int]]] = None
+            now = time.perf_counter()
+            max_age = max(0.0, float(max_fallback_age_s))
             for fallback_idx, src in enumerate(self.sources):
                 fallback = src.get_latest()
                 if fallback is None:
+                    continue
+                frame_age = now - float(fallback[2])
+                if frame_age > max_age:
                     continue
                 if freshest is None or fallback[2] > freshest[1][2]:
                     freshest = (fallback_idx, fallback)
             if freshest is not None:
                 fallback_idx, fallback = freshest
                 left, right, ts, frame_id = fallback
+                self._maybe_finalize_switch_breakdown(fallback_idx, ts, frame_id)
                 return left, right, ts, frame_id, fallback_idx
 
         if time.perf_counter() >= deadline:
@@ -320,4 +484,4 @@ class MultiStereoCamera:
     def release(self) -> None:
         """Stop all sources and release devices."""
         for src in self.sources:
-            src.stop()
+            src.stop(wait=True, release_device=True)

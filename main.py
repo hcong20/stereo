@@ -79,6 +79,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=1,
+        help="Frames discarded after camera open; lower values reduce switch latency",
+    )
+    parser.add_argument(
+        "--skip-prewarm-inputs",
+        action="store_true",
+        help="Skip startup prewarm for non-active inputs in single-active mode",
+    )
+    parser.add_argument(
         "--capture-mode",
         choices=["auto", "parallel", "single-active"],
         default="auto",
@@ -291,6 +302,7 @@ def main() -> None:
             height=args.height,
             fps=args.fps,
             use_gstreamer=args.gstreamer,
+            warmup_frames=max(0, int(args.warmup_frames)),
         )
         for device in device_list
     ]
@@ -368,6 +380,39 @@ def main() -> None:
                 f"active={active_idx + 1}, devices={device_list}"
             )
             print(f"[INFO] capture_mode={args.capture_mode}, single_active_mode={cam.single_active_mode}")
+
+            if cam.single_active_mode and not bool(args.skip_prewarm_inputs):
+                prewarm_timeout_s = max(3.0, switch_timeout_s)
+                active_start_idx = active_idx
+                print(
+                    "[INFO] Prewarming non-active inputs for faster first switch "
+                    f"(timeout={prewarm_timeout_s:.1f}s each)"
+                )
+                for idx in range(len(device_list)):
+                    if idx == active_start_idx:
+                        continue
+                    t_sw = time.perf_counter()
+                    cam.switch_to(idx)
+                    try:
+                        cam.read(
+                            timeout_s=prewarm_timeout_s,
+                            min_timestamp_s=t_sw,
+                            allow_fallback=False,
+                            max_fallback_age_s=0.8,
+                        )
+                        print(f"[INFO] prewarm input {idx + 1}: ready")
+                    except Exception as exc:
+                        print(f"[WARN] prewarm input {idx + 1} failed: {exc}")
+
+                t_sw = time.perf_counter()
+                cam.switch_to(active_start_idx)
+                left0, right0, _, _, active_idx = cam.read(
+                    timeout_s=max(3.0, switch_timeout_s),
+                    min_timestamp_s=t_sw,
+                    allow_fallback=False,
+                    max_fallback_age_s=0.8,
+                )
+                print(f"[INFO] prewarm complete; restored active input {active_idx + 1}")
         else:
             cam = StereoCamera(cam_cfgs[0])
             cam.open()
@@ -502,23 +547,39 @@ def main() -> None:
     window_sized = False
     screen_size = get_screen_size()
     last_switch_latency_ms: Optional[float] = None
+    last_switch_breakdown: Optional[dict] = None
     switch_pending: Optional[tuple[int, float]] = None
-    read_timeout_idle_s = min(0.03, switch_timeout_s)
-    read_timeout_switch_s = min(0.08, switch_timeout_s)
+    last_good_frame: Optional[tuple[np.ndarray, np.ndarray, float, int]] = None
+    last_read_error_log_t = 0.0
+    switch_runtime_timeout_s = switch_timeout_s
+    if multi_mode and isinstance(cam, MultiStereoCamera) and cam.single_active_mode and switch_runtime_timeout_s < 3.0:
+        print(
+            "[WARN] Single-active mode detected with slow camera restart characteristics; "
+            f"raising runtime switch timeout from {switch_runtime_timeout_s:.2f}s to 3.00s"
+        )
+        switch_runtime_timeout_s = 3.0
+
+    read_timeout_idle_s = min(0.05, switch_runtime_timeout_s)
+    read_timeout_switch_s = min(0.20, switch_runtime_timeout_s)
+    fallback_max_age_s = max(0.12, min(0.4, switch_runtime_timeout_s))
 
     def read_active_frame() -> tuple[np.ndarray, np.ndarray, float, int]:
         """Read current active source frame and return source index for overlays."""
         if multi_mode:
             min_ts = 0.0
             timeout = read_timeout_idle_s
+            allow_fallback = True
             if switch_pending is not None:
                 _, pending_t0 = switch_pending
                 min_ts = pending_t0
                 timeout = read_timeout_switch_s
+                # During a pending switch, wait for target fresh frame only.
+                allow_fallback = False
             l, r, ts, _, idx = cam.read(
                 timeout_s=timeout,
                 min_timestamp_s=min_ts,
-                allow_fallback=True,
+                allow_fallback=allow_fallback,
+                max_fallback_age_s=fallback_max_age_s,
             )
             return l, r, ts, idx
         l, r, ts = cam.read()
@@ -528,13 +589,46 @@ def main() -> None:
         while True:
             t0 = time.perf_counter()
             # 1) Capture and optional channel swap.
-            left, right, frame_ts, active_idx = read_active_frame()
+            try:
+                left, right, frame_ts, active_idx = read_active_frame()
+                last_good_frame = (left, right, frame_ts, active_idx)
+                if multi_mode and isinstance(cam, MultiStereoCamera):
+                    breakdown = cam.get_last_switch_breakdown()
+                    if breakdown is not None:
+                        last_switch_breakdown = breakdown
+            except RuntimeError as exc:
+                now = time.perf_counter()
+                if now - last_read_error_log_t >= 1.0:
+                    print(f"[WARN] Frame read transient failure: {exc}")
+                    last_read_error_log_t = now
+
+                if switch_pending is not None:
+                    pending_idx, pending_t0 = switch_pending
+                    if (now - pending_t0) >= switch_runtime_timeout_s:
+                        statuses = cam.source_statuses()
+                        target = statuses[pending_idx]
+                        age_text = "N/A" if target["frame_age_ms"] is None else f"{target['frame_age_ms']:.0f}ms"
+                        err_text = target["last_error"] if target["last_error"] else "-"
+                        print(
+                            "[WARN] Switch timed out: "
+                            f"requested_input={pending_idx + 1}, fallback_input=unchanged, "
+                            f"target_has_frame={target['has_frame']}, target_age={age_text}, "
+                            f"target_running={target['running']}, target_thread={target['thread_alive']}, "
+                            f"target_err={err_text}"
+                        )
+                        switch_pending = None
+
+                if last_good_frame is None:
+                    time.sleep(0.01)
+                    continue
+                left, right, frame_ts, active_idx = last_good_frame
+
             if switch_pending is not None:
                 pending_idx, pending_t0 = switch_pending
                 if pending_idx == active_idx and frame_ts >= pending_t0:
                     last_switch_latency_ms = (time.perf_counter() - pending_t0) * 1000.0
                     switch_pending = None
-                elif (time.perf_counter() - pending_t0) >= switch_timeout_s:
+                elif (time.perf_counter() - pending_t0) >= switch_runtime_timeout_s:
                     # Target source did not deliver a fresh frame in time.
                     # Keep showing available stream and clear pending state.
                     cam.switch_to(active_idx)
@@ -545,7 +639,9 @@ def main() -> None:
                     print(
                         "[WARN] Switch timed out: "
                         f"requested_input={pending_idx + 1}, fallback_input={active_idx + 1}, "
-                        f"target_has_frame={target['has_frame']}, target_age={age_text}, target_err={err_text}"
+                        f"target_has_frame={target['has_frame']}, target_age={age_text}, "
+                        f"target_running={target['running']}, target_thread={target['thread_alive']}, "
+                        f"target_err={err_text}"
                     )
                     switch_pending = None
             if swap_lr:
@@ -654,6 +750,17 @@ def main() -> None:
                     "Switch latency: N/A",
                     (10, 150),
                     (255, 255, 0),
+                )
+            if last_switch_breakdown is not None:
+                stop_ms = float(last_switch_breakdown.get("stop_ms", 0.0))
+                open_ms = float(last_switch_breakdown.get("open_ms", 0.0))
+                frame_ms = float(last_switch_breakdown.get("first_frame_ms", 0.0))
+                total_ms = float(last_switch_breakdown.get("total_ms", 0.0))
+                left_viz = draw_text(
+                    left_viz,
+                    f"Sw seg(ms) stop/open/frame={stop_ms:.0f}/{open_ms:.0f}/{frame_ms:.0f} total={total_ms:.0f}",
+                    (10, 330),
+                    (200, 255, 200),
                 )
             left_viz = draw_text(
                 left_viz,
