@@ -6,16 +6,24 @@ depth conversion, robust ROI distance extraction, temporal smoothing,
 and live OpenCV visualization.
 """
 
-import argparse
 import time
-from dataclasses import dataclass
 from typing import Optional
 
 import cv2
 import numpy as np
 
+from stereo_vision.app_cli import (
+    PerfStats,
+    decode_switch_index,
+    fourcc_to_str,
+    get_screen_size,
+    parse_args,
+    parse_roi,
+    resolve_baseline_m,
+    safe_num_disparities_for_roi,
+)
 from stereo_vision.calibration import load_stereo_calibration
-from stereo_vision.camera import CameraConfig, MultiStereoCamera, StereoCamera
+from stereo_vision.camera import MultiStereoCamera
 from stereo_vision.depth import DepthConfig, DepthEstimator
 from stereo_vision.disparity import SGBMConfig, StereoDisparityEstimator
 from stereo_vision.filters import DistanceFilter, TemporalFilterConfig
@@ -23,253 +31,8 @@ from stereo_vision.optimization import RuntimeOptimizationConfig, crop_for_dispa
 from stereo_vision.preprocess import FramePreprocessor, PreprocessConfig
 from stereo_vision.rectification import build_rectification_maps, rectify_pair
 from stereo_vision.roi import ROI, robust_roi_distance
+from stereo_vision.startup import initialize_capture
 from stereo_vision.visualization import VizState, colorize_disparity, draw_roi, draw_text, register_click
-
-
-@dataclass
-class PerfStats:
-    """Track runtime throughput for on-screen FPS reporting.
-
-    The class computes average FPS from process start instead of instantaneous
-    FPS to keep the overlay stable and easy to interpret.
-    """
-
-    frame_count: int = 0
-    start: float = time.perf_counter()
-
-    def update_fps(self) -> float:
-        """Update frame counter and return average FPS since start.
-
-        Returns:
-            Average frames per second over the elapsed runtime.
-        """
-        self.frame_count += 1
-        elapsed = max(1e-6, time.perf_counter() - self.start)
-        return self.frame_count / elapsed
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI options for camera, disparity, depth, and filtering.
-
-    Returns:
-        Parsed command-line namespace used to configure the whole pipeline.
-    """
-    parser = argparse.ArgumentParser(description="RK3588 Stereo Distance Measurement")
-
-    parser.add_argument("--device", default="/dev/video20")
-    parser.add_argument(
-        "--devices",
-        default="",
-        help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
-    )
-    parser.add_argument(
-        "--active-input",
-        type=int,
-        default=1,
-        help="1-based input index selected at startup when --devices is used",
-    )
-    parser.add_argument(
-        "--switch-timeout-ms",
-        type=float,
-        default=500.0,
-        help="Max wait for frame from selected input after switching",
-    )
-    parser.add_argument("--calib", default="stereo_calib_params.npz")
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument(
-        "--warmup-frames",
-        type=int,
-        default=1,
-        help="Frames discarded after camera open; lower values reduce switch latency",
-    )
-    parser.add_argument(
-        "--skip-prewarm-inputs",
-        action="store_true",
-        help="Skip startup prewarm for non-active inputs in single-active mode",
-    )
-    parser.add_argument(
-        "--capture-mode",
-        choices=["auto", "parallel", "single-active"],
-        default="auto",
-        help=(
-            "Multi-input capture strategy: parallel opens all inputs concurrently; "
-            "single-active keeps only selected input streaming; auto prefers parallel and "
-            "falls back to single-active when parallel availability is poor."
-        ),
-    )
-    parser.add_argument("--gstreamer", action="store_true")
-    parser.add_argument("--swap-lr", action="store_true", help="Swap left/right camera halves")
-    parser.add_argument(
-        "--use-precomputed-rect",
-        action="store_true",
-        help="Use R1/R2/P1/P2/Q from calibration if available",
-    )
-
-    parser.add_argument("--scale", type=float, default=1.0)
-    parser.add_argument(
-        "--preprocess-backend",
-        choices=["auto", "cpu", "rga"],
-        default="auto",
-        help="Frame preprocess backend (RGA requires external module)",
-    )
-    parser.add_argument(
-        "--rga-module",
-        type=str,
-        default="rga_helper",
-        help="Python module name providing RGA preprocess_pair_bgr_to_gray",
-    )
-    parser.add_argument(
-        "--allow-unsafe-rga-multicam",
-        action="store_true",
-        help=(
-            "Allow RGA preprocess in multi-camera mode. "
-            "Disabled by default because some RGA stacks can hang the system during source switching."
-        ),
-    )
-    parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")
-    parser.add_argument("--roi-disparity-only", action="store_true")
-
-    parser.add_argument("--num-disp", type=int, default=128)
-    parser.add_argument("--block-size", type=int, default=5)
-    parser.add_argument("--min-disp", type=int, default=0)
-    parser.add_argument("--depth-min-disp", type=float, default=0.1)
-    parser.add_argument("--max-depth", type=float, default=20.0)
-    parser.add_argument(
-        "--baseline-unit",
-        choices=["auto", "m", "mm"],
-        default="auto",
-        help="Unit of T baseline stored in calibration",
-    )
-
-    parser.add_argument("--ema-alpha", type=float, default=0.35)
-    parser.add_argument("--max-jump", type=float, default=1.0)
-    parser.add_argument("--filter-window", type=int, default=5)
-    parser.add_argument("--min-valid-pixels", type=int, default=10)
-
-    return parser.parse_args()
-
-
-def parse_roi(text: str) -> ROI:
-    """Parse ROI text in x,y,w,h format into an ROI object.
-
-    Args:
-        text: ROI string such as "270,175,100,70".
-
-    Returns:
-        Parsed ROI instance.
-    """
-    vals = [int(v.strip()) for v in text.split(",")]
-    if len(vals) != 4:
-        raise ValueError("ROI must be x,y,w,h")
-    return ROI(*vals)
-
-
-def to_gray(img: np.ndarray) -> np.ndarray:
-    """Convert BGR image to grayscale, or pass through if already gray.
-
-    Args:
-        img: Input image in either grayscale or BGR format.
-
-    Returns:
-        2D grayscale image.
-    """
-    if img.ndim == 2:
-        return img
-    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-
-def get_screen_size() -> tuple[int, int] | None:
-    """Best-effort screen size query for window centering.
-
-    Returns:
-        (width, height) in pixels when available, else None.
-    """
-    try:
-        import tkinter as tk
-
-        root = tk.Tk()
-        root.withdraw()
-        width = int(root.winfo_screenwidth())
-        height = int(root.winfo_screenheight())
-        root.destroy()
-        if width > 0 and height > 0:
-            return width, height
-    except Exception:
-        return None
-    return None
-
-
-def resolve_baseline_m(raw_baseline: float, baseline_unit: str) -> float:
-    """Convert baseline value to meters using explicit or inferred unit.
-
-    Args:
-        raw_baseline: Baseline value loaded from calibration data.
-        baseline_unit: One of "m", "mm", or "auto".
-
-    Returns:
-        Baseline value in meters.
-    """
-    if baseline_unit == "m":
-        return raw_baseline
-    if baseline_unit == "mm":
-        return raw_baseline / 1000.0
-    # Auto: most stereo rigs are in cm-scale baseline; values >2 are likely mm.
-    if raw_baseline > 2.0:
-        return raw_baseline / 1000.0
-    return raw_baseline
-
-
-def safe_num_disparities_for_roi(requested: int, roi_width: int) -> int:
-    """Choose safe SGBM disparities for ROI mode.
-
-    OpenCV SGBM can fail when numDisparities is too large relative to the
-    horizontal extent of the ROI. This helper clamps to a conservative value.
-
-    Args:
-        requested: User requested numDisparities.
-        roi_width: ROI width in pixels after scaling.
-
-    Returns:
-        A safe numDisparities value (multiple of 16).
-    """
-    req = max(16, (int(requested) // 16) * 16)
-    max_safe = ((max(0, int(roi_width)) // 16) - 1) * 16
-    if max_safe < 16:
-        raise ValueError(
-            f"ROI width={roi_width} is too small for SGBM ROI mode. Increase ROI width to at least 32 pixels."
-        )
-    return min(req, max_safe)
-
-
-def fourcc_to_str(fourcc_value: float) -> str:
-    """Decode OpenCV FOURCC numeric code into a readable 4-char string."""
-    code = int(fourcc_value)
-    return "".join([chr((code >> (8 * i)) & 0xFF) for i in range(4)])
-
-
-def decode_switch_index(key_raw: int, source_count: int) -> Optional[int]:
-    """Decode input-switch index from OpenCV key code.
-
-    Supports both top-row digits and keypad digits reported by waitKeyEx.
-    Returns a zero-based camera index, or None when key is not a switch key.
-    """
-    if source_count <= 0 or key_raw < 0:
-        return None
-
-    # Standard ASCII digits from top keyboard row.
-    low = key_raw & 0xFF
-    if ord("1") <= low <= ord("9"):
-        idx = int(low - ord("1"))
-        return idx if idx < source_count else None
-
-    # X11 keypad keys (Linux): XK_KP_1..XK_KP_9 (0xFFB1..0xFFB9).
-    if 0xFFB1 <= key_raw <= 0xFFB9:
-        idx = int(key_raw - 0xFFB1)
-        return idx if idx < source_count else None
-
-    return None
 
 
 def main() -> None:
@@ -290,160 +53,13 @@ def main() -> None:
             "System will run with available inputs."
         )
 
-    switch_timeout_s = max(0.05, float(args.switch_timeout_ms) / 1000.0)
-    multi_mode = len(device_list) > 1
-    cam: Optional[MultiStereoCamera | StereoCamera] = None
-    active_idx = 0
-
-    cam_cfgs = [
-        CameraConfig(
-            device=device,
-            width=args.width,
-            height=args.height,
-            fps=args.fps,
-            use_gstreamer=args.gstreamer,
-            warmup_frames=max(0, int(args.warmup_frames)),
-        )
-        for device in device_list
-    ]
-    requested_idx = max(0, min(int(args.active_input) - 1, len(device_list) - 1))
-
-    try:
-        if multi_mode:
-            capture_mode = str(args.capture_mode)
-            single_active_mode = capture_mode == "single-active"
-            cam = MultiStereoCamera(
-                cam_cfgs,
-                single_active_mode=single_active_mode,
-                initial_active_index=requested_idx,
-            )
-            cam.start(stagger_s=0.15)
-            if requested_idx != int(args.active_input) - 1:
-                print(
-                    "[WARN] --active-input is out of range; "
-                    f"clamped to {requested_idx + 1}/{len(device_list)}"
-                )
-
-            def print_source_statuses(tag: str) -> None:
-                statuses = cam.source_statuses()
-                print(f"[INFO] {tag} source status:")
-                for st in statuses:
-                    age_text = "N/A" if st["frame_age_ms"] is None else f"{st['frame_age_ms']:.0f}ms"
-                    err_text = st["last_error"] if st["last_error"] else "-"
-                    print(
-                        "[INFO] "
-                        f"input={st['index'] + 1} dev={st['device']} has_frame={st['has_frame']} "
-                        f"age={age_text} frame_id={st['frame_id']} err={err_text}"
-                    )
-
-            try:
-                left0, right0, _, _, active_idx = cam.read(
-                    timeout_s=max(8.0, switch_timeout_s * 4.0),
-                    allow_fallback=False,
-                )
-            except RuntimeError as exc:
-                print(
-                    "[INFO] Requested startup input is not ready yet; "
-                    f"requested={requested_idx + 1}, reason={exc}"
-                )
-                print_source_statuses("startup")
-
-                if capture_mode == "auto":
-                    statuses = cam.source_statuses()
-                    ready_count = sum(1 for st in statuses if st["has_frame"])
-                    if ready_count <= 1:
-                        print(
-                            "[WARN] Parallel capture appears constrained "
-                            f"(ready_inputs={ready_count}/{len(statuses)}). "
-                            "Auto-switching to single-active capture mode."
-                        )
-                        cam.release()
-                        time.sleep(0.2)
-                        cam = MultiStereoCamera(
-                            cam_cfgs,
-                            single_active_mode=True,
-                            initial_active_index=requested_idx,
-                        )
-                        cam.start(stagger_s=0.0)
-
-                # Retry requested input first; only allow fallback when strict
-                # retry still fails.
-                t_retry = time.perf_counter()
-                cam.switch_to(requested_idx)
-                try:
-                    left0, right0, _, _, active_idx = cam.read(
-                        timeout_s=max(10.0, switch_timeout_s * 4.0),
-                        min_timestamp_s=t_retry,
-                        allow_fallback=False,
-                        max_fallback_age_s=0.8,
-                    )
-                    print(
-                        "[INFO] Startup recovered on requested input: "
-                        f"input={active_idx + 1}"
-                    )
-                except RuntimeError:
-                    left0, right0, _, _, active_idx = cam.read(
-                        timeout_s=max(10.0, switch_timeout_s * 4.0),
-                        allow_fallback=True,
-                    )
-                    if active_idx != requested_idx:
-                        print(
-                            "[WARN] Startup fallback applied: "
-                            f"requested={requested_idx + 1}, using={active_idx + 1}"
-                        )
-                    else:
-                        print(
-                            "[INFO] Requested startup input became ready after retry: "
-                            f"input={active_idx + 1}"
-                        )
-
-            print(
-                f"[INFO] Multi-input mode enabled: inputs={len(device_list)}, "
-                f"active={active_idx + 1}, devices={device_list}"
-            )
-            print(f"[INFO] capture_mode={args.capture_mode}, single_active_mode={cam.single_active_mode}")
-
-            if cam.single_active_mode and not bool(args.skip_prewarm_inputs):
-                prewarm_timeout_s = max(3.0, switch_timeout_s)
-                active_start_idx = active_idx
-                print(
-                    "[INFO] Prewarming non-active inputs for faster first switch "
-                    f"(timeout={prewarm_timeout_s:.1f}s each)"
-                )
-                for idx in range(len(device_list)):
-                    if idx == active_start_idx:
-                        continue
-                    t_sw = time.perf_counter()
-                    cam.switch_to(idx)
-                    try:
-                        cam.read(
-                            timeout_s=prewarm_timeout_s,
-                            min_timestamp_s=t_sw,
-                            allow_fallback=False,
-                            max_fallback_age_s=0.8,
-                        )
-                        print(f"[INFO] prewarm input {idx + 1}: ready")
-                    except Exception as exc:
-                        print(f"[WARN] prewarm input {idx + 1} failed: {exc}")
-
-                t_sw = time.perf_counter()
-                cam.switch_to(active_start_idx)
-                left0, right0, _, _, active_idx = cam.read(
-                    timeout_s=max(3.0, switch_timeout_s),
-                    min_timestamp_s=t_sw,
-                    allow_fallback=False,
-                    max_fallback_age_s=0.8,
-                )
-                print(f"[INFO] prewarm complete; restored active input {active_idx + 1}")
-        else:
-            cam = StereoCamera(cam_cfgs[0])
-            cam.open()
-            left0, right0, _ = cam.read()
-            active_idx = 0
-    except Exception:
-        if cam is not None:
-            cam.release()
-        raise
+    startup = initialize_capture(args, device_list)
+    cam = startup.cam
+    multi_mode = startup.multi_mode
+    switch_timeout_s = startup.switch_timeout_s
+    active_idx = startup.active_idx
+    left0 = startup.left0
+    right0 = startup.right0
 
     calib = load_stereo_calibration(args.calib)
 
