@@ -55,34 +55,12 @@ def parse_args() -> argparse.Namespace:
         help="Frames discarded after camera open; lower values reduce switch latency",
     )
     parser.add_argument(
-        "--skip-prewarm-inputs",
-        action="store_true",
-        help="Skip startup prewarm for non-active inputs in single-active mode",
-    )
-    parser.add_argument(
-        "--capture-mode",
-        choices=["auto", "parallel", "single-active"],
-        default="auto",
-        help=(
-            "Multi-input capture strategy: parallel opens all inputs concurrently; "
-            "single-active keeps only selected input streaming; auto prefers parallel and "
-            "falls back to single-active when parallel availability is poor."
-        ),
-    )
-    parser.add_argument(
         "--bus-groups",
-        default="",
+        default="0,0,2,2",
         help=(
             "Comma-separated bus/group label for each input device, "
-            "e.g. 0,0,2,2 for 4 inputs"
-        ),
-    )
-    parser.add_argument(
-        "--keep-one-live-per-group",
-        action="store_true",
-        help=(
-            "In single-active mode, keep one source live in each bus group "
-            "(requires --bus-groups)."
+            "e.g. 0,0,2,2 for 4 inputs. "
+            "Required when using multiple inputs; grouped slot-aligned single-active mode is always used."
         ),
     )
     parser.add_argument("--gstreamer", action="store_true")

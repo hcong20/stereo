@@ -44,9 +44,6 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
     cam: Optional[MultiStereoCamera | StereoCamera] = None
     active_idx = 0
     bus_groups = _parse_bus_groups(getattr(args, "bus_groups", ""), len(device_list))
-    keep_one_live_per_group = bool(getattr(args, "keep_one_live_per_group", False))
-    if bus_groups is not None and not keep_one_live_per_group:
-        keep_one_live_per_group = True
 
     cam_cfgs = [
         CameraConfig(
@@ -63,16 +60,20 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
 
     try:
         if multi_mode:
-            capture_mode = str(args.capture_mode)
-            single_active_mode = capture_mode == "single-active"
+            if bus_groups is None:
+                raise ValueError(
+                    "Multi-input mode now requires --bus-groups. "
+                    "Example: --bus-groups 0,0,2,2"
+                )
+
             cam = MultiStereoCamera(
                 cam_cfgs,
-                single_active_mode=single_active_mode,
+                single_active_mode=True,
                 initial_active_index=requested_idx,
                 group_ids=bus_groups,
-                keep_one_live_per_group=keep_one_live_per_group,
+                keep_one_live_per_group=True,
             )
-            cam.start(stagger_s=0.15)
+            cam.start(stagger_s=0.0)
             if requested_idx != int(args.active_input) - 1:
                 print(
                     "[WARN] --active-input is out of range; "
@@ -93,113 +94,29 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                     )
 
             try:
+                t_req = time.perf_counter()
+                cam.switch_to(requested_idx)
                 left0, right0, _, _, active_idx = cam.read(
-                    timeout_s=max(8.0, switch_timeout_s * 4.0),
+                    timeout_s=max(10.0, switch_timeout_s * 4.0),
+                    min_timestamp_s=t_req,
                     allow_fallback=False,
                 )
             except RuntimeError as exc:
                 print(
-                    "[INFO] Requested startup input is not ready yet; "
+                    "[WARN] Requested startup input is not ready; "
                     f"requested={requested_idx + 1}, reason={exc}"
                 )
                 print_source_statuses("startup")
-
-                if capture_mode == "auto":
-                    statuses = cam.source_statuses()
-                    ready_count = sum(1 for st in statuses if st["has_frame"])
-                    if ready_count <= 1:
-                        print(
-                            "[WARN] Parallel capture appears constrained "
-                            f"(ready_inputs={ready_count}/{len(statuses)}). "
-                            "Auto-switching to single-active capture mode."
-                        )
-                        cam.release()
-                        time.sleep(0.2)
-                        cam = MultiStereoCamera(
-                            cam_cfgs,
-                            single_active_mode=True,
-                            initial_active_index=requested_idx,
-                            group_ids=bus_groups,
-                            keep_one_live_per_group=keep_one_live_per_group,
-                        )
-                        cam.start(stagger_s=0.0)
-
-                # Retry requested input first; only allow fallback when strict
-                # retry still fails.
-                t_retry = time.perf_counter()
-                cam.switch_to(requested_idx)
-                try:
-                    left0, right0, _, _, active_idx = cam.read(
-                        timeout_s=max(10.0, switch_timeout_s * 4.0),
-                        min_timestamp_s=t_retry,
-                        allow_fallback=False,
-                        max_fallback_age_s=0.8,
-                    )
-                    print(
-                        "[INFO] Startup recovered on requested input: "
-                        f"input={active_idx + 1}"
-                    )
-                except RuntimeError:
-                    left0, right0, _, _, active_idx = cam.read(
-                        timeout_s=max(10.0, switch_timeout_s * 4.0),
-                        allow_fallback=True,
-                    )
-                    if active_idx != requested_idx:
-                        print(
-                            "[WARN] Startup fallback applied: "
-                            f"requested={requested_idx + 1}, using={active_idx + 1}"
-                        )
-                    else:
-                        print(
-                            "[INFO] Requested startup input became ready after retry: "
-                            f"input={active_idx + 1}"
-                        )
+                raise RuntimeError(
+                    "Grouped linked single-active startup failed on requested input."
+                ) from exc
 
             print(
                 f"[INFO] Multi-input mode enabled: inputs={len(device_list)}, "
                 f"active={active_idx + 1}, devices={device_list}"
             )
-            print(f"[INFO] capture_mode={args.capture_mode}, single_active_mode={cam.single_active_mode}")
-            if bus_groups is not None:
-                print(
-                    "[INFO] bus_groups="
-                    f"{bus_groups}, keep_one_live_per_group={cam.group_live_mode}"
-                )
-
-            if cam.single_active_mode and cam.group_live_mode and not bool(args.skip_prewarm_inputs):
-                print("[INFO] Group-live mode active: skipping prewarm to preserve one-live-per-group layout")
-            elif cam.single_active_mode and not bool(args.skip_prewarm_inputs):
-                prewarm_timeout_s = max(3.0, switch_timeout_s)
-                active_start_idx = active_idx
-                print(
-                    "[INFO] Prewarming non-active inputs for faster first switch "
-                    f"(timeout={prewarm_timeout_s:.1f}s each)"
-                )
-                for idx in range(len(device_list)):
-                    if idx == active_start_idx:
-                        continue
-                    t_sw = time.perf_counter()
-                    cam.switch_to(idx)
-                    try:
-                        cam.read(
-                            timeout_s=prewarm_timeout_s,
-                            min_timestamp_s=t_sw,
-                            allow_fallback=False,
-                            max_fallback_age_s=0.8,
-                        )
-                        print(f"[INFO] prewarm input {idx + 1}: ready")
-                    except Exception as exc:
-                        print(f"[WARN] prewarm input {idx + 1} failed: {exc}")
-
-                t_sw = time.perf_counter()
-                cam.switch_to(active_start_idx)
-                left0, right0, _, _, active_idx = cam.read(
-                    timeout_s=max(3.0, switch_timeout_s),
-                    min_timestamp_s=t_sw,
-                    allow_fallback=False,
-                    max_fallback_age_s=0.8,
-                )
-                print(f"[INFO] prewarm complete; restored active input {active_idx + 1}")
+            print("[INFO] capture_mode=group-linked-single-active")
+            print(f"[INFO] bus_groups={bus_groups}, group_live_mode={cam.group_live_mode}")
         else:
             cam = StereoCamera(cam_cfgs[0])
             cam.open()
