@@ -186,7 +186,7 @@ def main() -> None:
     screen_size = get_screen_size()
     last_switch_latency_ms: Optional[float] = None
     last_switch_breakdown: Optional[dict] = None
-    switch_pending: Optional[tuple[int, float]] = None
+    switch_pending: Optional[dict] = None
     last_good_frame: Optional[tuple[np.ndarray, np.ndarray, float, int]] = None
     switch_runtime_timeout_s = switch_timeout_s
     if multi_mode and isinstance(cam, MultiStereoCamera) and cam.single_active_mode and switch_runtime_timeout_s < 3.0:
@@ -207,7 +207,7 @@ def main() -> None:
             timeout = read_timeout_idle_s
             allow_fallback = True
             if switch_pending is not None:
-                _, pending_t0 = switch_pending
+                pending_t0 = float(switch_pending["t0"])
                 min_ts = pending_t0
                 timeout = read_timeout_switch_s
                 # During a pending switch, wait for target fresh frame only.
@@ -237,7 +237,8 @@ def main() -> None:
                 now = time.perf_counter()
 
                 if switch_pending is not None:
-                    pending_idx, pending_t0 = switch_pending
+                    pending_idx = int(switch_pending["to_idx"])
+                    pending_t0 = float(switch_pending["t0"])
                     if (now - pending_t0) >= switch_runtime_timeout_s:
                         statuses = cam.source_statuses()
                         target = statuses[pending_idx]
@@ -258,9 +259,31 @@ def main() -> None:
                 left, right, frame_ts, active_idx = last_good_frame
 
             if switch_pending is not None:
-                pending_idx, pending_t0 = switch_pending
+                pending_idx = int(switch_pending["to_idx"])
+                pending_from_idx = int(switch_pending["from_idx"])
+                pending_t0 = float(switch_pending["t0"])
                 if pending_idx == active_idx and frame_ts >= pending_t0:
                     last_switch_latency_ms = (time.perf_counter() - pending_t0) * 1000.0
+                    if multi_mode and isinstance(cam, MultiStereoCamera):
+                        breakdown = cam.get_last_switch_breakdown()
+                        if breakdown is not None:
+                            last_switch_breakdown = breakdown
+                    if last_switch_breakdown is not None:
+                        print(
+                            "[INFO] Switch complete: "
+                            f"from_input={pending_from_idx + 1}, to_input={active_idx + 1}, "
+                            f"latency={last_switch_latency_ms:.1f}ms, "
+                            f"seg_stop={float(last_switch_breakdown.get('stop_ms', 0.0)):.0f}ms, "
+                            f"seg_open={float(last_switch_breakdown.get('open_ms', 0.0)):.0f}ms, "
+                            f"seg_frame={float(last_switch_breakdown.get('first_frame_ms', 0.0)):.0f}ms, "
+                            f"seg_total={float(last_switch_breakdown.get('total_ms', 0.0)):.0f}ms"
+                        )
+                    else:
+                        print(
+                            "[INFO] Switch complete: "
+                            f"from_input={pending_from_idx + 1}, to_input={active_idx + 1}, "
+                            f"latency={last_switch_latency_ms:.1f}ms"
+                        )
                     switch_pending = None
                 elif (time.perf_counter() - pending_t0) >= switch_runtime_timeout_s:
                     # Target source did not deliver a fresh frame in time.
@@ -370,7 +393,8 @@ def main() -> None:
                     (200, 255, 200),
                 )
             elif switch_pending is not None:
-                pending_idx, pending_t0 = switch_pending
+                pending_idx = int(switch_pending["to_idx"])
+                pending_t0 = float(switch_pending["t0"])
                 pending_ms = (time.perf_counter() - pending_t0) * 1000.0
                 left_viz = draw_text(
                     left_viz,
@@ -452,12 +476,32 @@ def main() -> None:
             if multi_mode:
                 req_idx = decode_switch_index(key_raw, len(device_list))
                 if req_idx is not None:
-                    active_applied = cam.switch_to(req_idx)
-                    switch_pending = (active_applied, time.perf_counter())
+                    if req_idx != active_idx:
+                        active_applied = cam.switch_to(req_idx)
+                        t_sw = time.perf_counter()
+                        switch_pending = {
+                            "from_idx": int(active_idx),
+                            "to_idx": int(active_applied),
+                            "t0": float(t_sw),
+                        }
+                        print(
+                            "[INFO] Switch request: "
+                            f"from_input={active_idx + 1}, to_input={active_applied + 1}, key=number"
+                        )
 
             if multi_mode and key == ord("n"):
-                active_applied = cam.switch_to((active_idx + 1) % len(device_list))
-                switch_pending = (active_applied, time.perf_counter())
+                next_idx = (active_idx + 1) % len(device_list)
+                active_applied = cam.switch_to(next_idx)
+                t_sw = time.perf_counter()
+                switch_pending = {
+                    "from_idx": int(active_idx),
+                    "to_idx": int(active_applied),
+                    "t0": float(t_sw),
+                }
+                print(
+                    "[INFO] Switch request: "
+                    f"from_input={active_idx + 1}, to_input={active_applied + 1}, key=next"
+                )
             if key == 27 or key == ord("q"):
                 break
 
