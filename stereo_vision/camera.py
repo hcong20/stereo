@@ -77,16 +77,46 @@ class StereoCamera:
             self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         else:
             self.cap = cv2.VideoCapture(self.cfg.device, cv2.CAP_V4L2)
-            if (not bool(self.cfg.fast_reopen)) or (not was_configured):
+
+        if self.cap is None or not self.cap.isOpened():
+            raise RuntimeError("Failed to open stereo camera")
+
+        if not self.cfg.use_gstreamer:
+            # Always enforce combined stereo dimensions; otherwise some drivers
+            # reopen at half width and produce visibly half-frame output.
+            force_full_config = (not bool(self.cfg.fast_reopen)) or (not was_configured)
+            if force_full_config:
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
                 self.cap.set(cv2.CAP_PROP_FPS, self.cfg.fps)
                 self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                self._configured_once = True
+            else:
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        if self.cap is None or not self.cap.isOpened():
-            raise RuntimeError("Failed to open stereo camera")
+            expected_min_w = max(2, int(self.cfg.width * 0.75))
+            expected_min_h = max(2, int(self.cfg.height * 0.75))
+            actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+
+            if actual_w > 0 and actual_h > 0 and (actual_w < expected_min_w or actual_h < expected_min_h):
+                # Retry one strict reconfiguration before failing the open.
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.height)
+                self.cap.set(cv2.CAP_PROP_FPS, self.cfg.fps)
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                time.sleep(0.01)
+                actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+
+            if actual_w > 0 and actual_h > 0 and (actual_w < expected_min_w or actual_h < expected_min_h):
+                raise RuntimeError(
+                    "Unexpected frame size after open "
+                    f"({actual_w}x{actual_h}); expected around {self.cfg.width}x{self.cfg.height}"
+                )
+
+        self._configured_once = True
 
         # Drop initial frames so exposure/auto-controls stabilize.
         warmup = max(0, int(self.cfg.warmup_frames))
@@ -111,6 +141,12 @@ class StereoCamera:
 
         # Height is kept for readability and potential future validation hooks.
         h, w = frame.shape[:2]
+        min_expected_w = max(2, int(self.cfg.width * 0.75))
+        if w < min_expected_w:
+            raise RuntimeError(
+                "Captured frame width is smaller than expected stereo width: "
+                f"got {w}, expected around {self.cfg.width}"
+            )
         if w % 2 != 0:
             raise ValueError(f"Expected combined frame width to be even, got {w}")
 
@@ -176,6 +212,8 @@ class BufferedStereoCamera:
 
     def _reader_loop(self) -> None:
         """Read frames continuously; auto-reopen on transient capture failures."""
+        consecutive_failures = 0
+        reopen_backoff_s = 0.1
         while self._running:
             try:
                 if self._camera.cap is None:
@@ -188,14 +226,32 @@ class BufferedStereoCamera:
                         self._open_count += 1
                 left, right, ts = self._camera.read()
                 self._frame_id += 1
+                consecutive_failures = 0
+                reopen_backoff_s = 0.1
                 with self._lock:
                     self._latest = (left, right, ts, self._frame_id)
                     self._last_error = None
             except Exception as exc:
+                msg = str(exc)
                 with self._lock:
-                    self._last_error = str(exc)
-                self._camera.release()
-                time.sleep(0.1)
+                    self._last_error = msg
+
+                consecutive_failures += 1
+                hard_reopen = (
+                    self._camera.cap is None
+                    or "Unexpected frame size after open" in msg
+                    or "Captured frame width is smaller than expected stereo width" in msg
+                )
+                soft_reopen = consecutive_failures >= 5
+
+                if hard_reopen or soft_reopen:
+                    self._camera.release()
+                    time.sleep(reopen_backoff_s)
+                    reopen_backoff_s = min(1.0, reopen_backoff_s * 1.8)
+                    consecutive_failures = 0
+                else:
+                    # Retry transient read failures a few times before reopen.
+                    time.sleep(min(0.02 * consecutive_failures, 0.1))
 
         # Release from capture thread context when a non-blocking stop is used.
         self._camera.release()
@@ -468,16 +524,16 @@ class MultiStereoCamera:
                 return left, right, ts, frame_id, fallback_idx
 
         if time.perf_counter() >= deadline:
-                details = []
-                for i, src in enumerate(self.sources):
-                    err = src.get_last_error()
-                    if err:
-                        details.append(f"{i}:{err}")
-                detail_text = "; ".join(details) if details else "no source reports frames yet"
-                raise RuntimeError(
-                    "No frame available on active source "
-                    f"{active_idx} within {timeout_s:.2f}s. errors={detail_text}"
-                )
+            details = []
+            for i, src in enumerate(self.sources):
+                err = src.get_last_error()
+                if err:
+                    details.append(f"{i}:{err}")
+            detail_text = "; ".join(details) if details else "no source reports frames yet"
+            raise RuntimeError(
+                "No frame available on active source "
+                f"{active_idx} within {timeout_s:.2f}s. errors={detail_text}"
+            )
 
         raise RuntimeError("Unexpected read state")
 

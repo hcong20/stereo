@@ -343,7 +343,7 @@ def main() -> None:
                 )
             except RuntimeError as exc:
                 print(
-                    "[WARN] Requested startup input has no frame; "
+                    "[INFO] Requested startup input is not ready yet; "
                     f"requested={requested_idx + 1}, reason={exc}"
                 )
                 print_source_statuses("startup")
@@ -366,14 +366,36 @@ def main() -> None:
                         )
                         cam.start(stagger_s=0.0)
 
-                left0, right0, _, _, active_idx = cam.read(
-                    timeout_s=max(10.0, switch_timeout_s * 4.0),
-                    allow_fallback=True,
-                )
-                print(
-                    "[WARN] Startup fallback applied: "
-                    f"requested={requested_idx + 1}, using={active_idx + 1}"
-                )
+                # Retry requested input first; only allow fallback when strict
+                # retry still fails.
+                t_retry = time.perf_counter()
+                cam.switch_to(requested_idx)
+                try:
+                    left0, right0, _, _, active_idx = cam.read(
+                        timeout_s=max(10.0, switch_timeout_s * 4.0),
+                        min_timestamp_s=t_retry,
+                        allow_fallback=False,
+                        max_fallback_age_s=0.8,
+                    )
+                    print(
+                        "[INFO] Startup recovered on requested input: "
+                        f"input={active_idx + 1}"
+                    )
+                except RuntimeError:
+                    left0, right0, _, _, active_idx = cam.read(
+                        timeout_s=max(10.0, switch_timeout_s * 4.0),
+                        allow_fallback=True,
+                    )
+                    if active_idx != requested_idx:
+                        print(
+                            "[WARN] Startup fallback applied: "
+                            f"requested={requested_idx + 1}, using={active_idx + 1}"
+                        )
+                    else:
+                        print(
+                            "[INFO] Requested startup input became ready after retry: "
+                            f"input={active_idx + 1}"
+                        )
 
             print(
                 f"[INFO] Multi-input mode enabled: inputs={len(device_list)}, "
@@ -550,7 +572,6 @@ def main() -> None:
     last_switch_breakdown: Optional[dict] = None
     switch_pending: Optional[tuple[int, float]] = None
     last_good_frame: Optional[tuple[np.ndarray, np.ndarray, float, int]] = None
-    last_read_error_log_t = 0.0
     switch_runtime_timeout_s = switch_timeout_s
     if multi_mode and isinstance(cam, MultiStereoCamera) and cam.single_active_mode and switch_runtime_timeout_s < 3.0:
         print(
@@ -596,11 +617,8 @@ def main() -> None:
                     breakdown = cam.get_last_switch_breakdown()
                     if breakdown is not None:
                         last_switch_breakdown = breakdown
-            except RuntimeError as exc:
+            except RuntimeError:
                 now = time.perf_counter()
-                if now - last_read_error_log_t >= 1.0:
-                    print(f"[WARN] Frame read transient failure: {exc}")
-                    last_read_error_log_t = now
 
                 if switch_pending is not None:
                     pending_idx, pending_t0 = switch_pending
