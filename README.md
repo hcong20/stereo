@@ -109,10 +109,25 @@ python3 main.py \
   --scale 1.0
 ```
 
-For low-latency GStreamer capture:
+Default capture backend is OpenCV + GStreamer. To force V4L2 backend:
 
 ```bash
-python3 main.py --gstreamer --device /dev/video0 --calib stereo_calib_params.npz
+python3 main.py --no-gstreamer --device /dev/video0 --calib stereo_calib_params.npz
+```
+
+For custom GStreamer capture pipeline:
+
+```bash
+python3 main.py \
+  --device /dev/video0 \
+  --gstreamer-pipeline "v4l2src device={device} io-mode=2 ! image/jpeg,width={width},height={height},framerate={fps}/1 ! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false" \
+  --calib stereo_calib_params.npz
+```
+
+To suppress non-fatal OpenCV/GStreamer startup warnings:
+
+```bash
+python3 main.py --quiet-opencv-log
 ```
 
 RGA-ready preprocessing backend selection:

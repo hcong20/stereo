@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="/dev/video20")
     parser.add_argument(
         "--devices",
-        default="",
+        default="/dev/video20,/dev/video22,/dev/video24,/dev/video26",
         help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
     )
     parser.add_argument(
@@ -63,7 +63,35 @@ def parse_args() -> argparse.Namespace:
             "Required when using multiple inputs; grouped slot-aligned single-active mode is always used."
         ),
     )
-    parser.add_argument("--gstreamer", action="store_true")
+    parser.add_argument(
+        "--gstreamer",
+        dest="gstreamer",
+        action="store_true",
+        default=True,
+        help="Use OpenCV CAP_GSTREAMER backend for camera capture (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-gstreamer",
+        dest="gstreamer",
+        action="store_false",
+        help="Disable GStreamer and use OpenCV CAP_V4L2 backend",
+    )
+    parser.add_argument(
+        "--gstreamer-pipeline",
+        "--gst-pipeline",
+        dest="gstreamer_pipeline",
+        default="",
+        help=(
+            "Optional custom GStreamer pipeline template. "
+            "Supports placeholders {device}, {width}, {height}, {fps}."
+        ),
+    )
+    parser.add_argument(
+        "--quiet-opencv-log",
+        dest="quiet_opencv_log",
+        action="store_true",
+        help="Reduce OpenCV runtime log level to ERROR (hides non-fatal GStreamer WARN messages)",
+    )
     parser.add_argument("--swap-lr", action="store_true", help="Swap left/right camera halves")
     parser.add_argument(
         "--use-precomputed-rect",

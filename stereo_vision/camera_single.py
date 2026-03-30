@@ -42,8 +42,8 @@ def build_usb_gstreamer_pipeline(device: str, width: int, height: int, fps: int)
     """
     return (
         f"v4l2src device={device} io-mode=2 ! "
-        f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1 ! "
-        "videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
+        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+        "jpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
 
@@ -74,6 +74,11 @@ class StereoCamera:
                 self.cfg.device, self.cfg.width, self.cfg.height, self.cfg.fps
             )
             self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if self.cap is None or not self.cap.isOpened():
+                raise RuntimeError(
+                    "Failed to open stereo camera via GStreamer. "
+                    f"device={self.cfg.device}, pipeline={pipeline}"
+                )
         else:
             self.cap = cv2.VideoCapture(self.cfg.device, cv2.CAP_V4L2)
 

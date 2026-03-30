@@ -44,6 +44,23 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
     cam: Optional[MultiStereoCamera | StereoCamera] = None
     active_idx = 0
     bus_groups = _parse_bus_groups(getattr(args, "bus_groups", ""), len(device_list))
+    gst_pipeline_template = str(getattr(args, "gstreamer_pipeline", "") or "").strip()
+
+    def resolve_gst_pipeline(device: str) -> Optional[str]:
+        if gst_pipeline_template == "":
+            return None
+        try:
+            return gst_pipeline_template.format(
+                device=device,
+                width=int(args.width),
+                height=int(args.height),
+                fps=int(args.fps),
+            )
+        except KeyError as exc:
+            raise ValueError(
+                "Invalid --gstreamer-pipeline template placeholder; "
+                "allowed: {device}, {width}, {height}, {fps}"
+            ) from exc
 
     cam_cfgs = [
         CameraConfig(
@@ -52,6 +69,7 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
             height=args.height,
             fps=args.fps,
             use_gstreamer=args.gstreamer,
+            gstreamer_pipeline=resolve_gst_pipeline(device),
             warmup_frames=max(0, int(args.warmup_frames)),
         )
         for device in device_list
