@@ -87,6 +87,23 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--gst-decode",
+        choices=["auto", "hw", "sw"],
+        default="auto",
+        help=(
+            "GStreamer MJPEG decode path: auto prefers RK3588 hardware decode (mppjpegdec) "
+            "with software fallback"
+        ),
+    )
+    parser.add_argument(
+        "--gst-output",
+        choices=["auto", "nv12", "bgr"],
+        default="auto",
+        help=(
+            "GStreamer output format: auto prefers NV12 (lower CPU path) with BGR fallback"
+        ),
+    )
+    parser.add_argument(
         "--quiet-opencv-log",
         dest="quiet_opencv_log",
         action="store_true",

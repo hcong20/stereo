@@ -115,6 +115,33 @@ Default capture backend is OpenCV + GStreamer. To force V4L2 backend:
 python3 main.py --no-gstreamer --device /dev/video0 --calib stereo_calib_params.npz
 ```
 
+By default, GStreamer capture now prefers RK3588 hardware MJPEG decode (`mppjpegdec`)
+and automatically falls back to software decode (`jpegdec`) if hardware decode
+is unavailable.
+
+It also prefers NV12 output path first (lower CPU pipeline) and falls back to
+BGR output when NV12 negotiation or frame layout is unsupported.
+
+Force decode mode explicitly:
+
+```bash
+# Force RK3588 hardware decode only
+python3 main.py --gst-decode hw
+
+# Force software decode only
+python3 main.py --gst-decode sw
+```
+
+Force output path explicitly:
+
+```bash
+# Prefer NV12 zero-copy-friendly path only
+python3 main.py --gst-output nv12
+
+# Force BGR output only (compatibility mode)
+python3 main.py --gst-output bgr
+```
+
 For custom GStreamer capture pipeline:
 
 ```bash
