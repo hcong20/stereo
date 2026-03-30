@@ -54,21 +54,21 @@ def _build_usb_gstreamer_sw_pipeline(device: str, width: int, height: int, fps: 
 
 
 def _build_usb_gstreamer_hw_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build RK3588 hardware MJPEG decode pipeline via Rockchip MPP."""
+    """Build RK3588 hardware MJPEG decode pipeline via Rockchip MPP (no jpegparse)."""
     return (
         f"v4l2src device={device} io-mode=2 ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "jpegparse ! mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
+        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
 
 
 def _build_usb_gstreamer_hw_nv12_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build RK3588 hardware MJPEG decode pipeline to NV12 output."""
+    """Build RK3588 hardware MJPEG decode pipeline to NV12 output (no jpegparse)."""
     return (
         f"v4l2src device={device} io-mode=2 ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "jpegparse ! mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=NV12 ! "
+        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=NV12 ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
 
@@ -110,26 +110,13 @@ def build_usb_gstreamer_pipeline_candidates(
     hw_nv12_primary = _build_usb_gstreamer_hw_nv12_pipeline(device, width, height, fps)
     sw_nv12 = _build_usb_gstreamer_sw_nv12_pipeline(device, width, height, fps)
 
-    # Some plugin stacks can negotiate without jpegparse in front of mppjpegdec.
-    hw_bgr_alt = (
-        f"v4l2src device={device} io-mode=2 ! "
-        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    )
-    hw_nv12_alt = (
-        f"v4l2src device={device} io-mode=2 ! "
-        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=NV12 ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    )
 
     if mode == "auto":
-        decode_nv12 = [hw_nv12_primary, hw_nv12_alt, sw_nv12]
-        decode_bgr = [hw_bgr_primary, hw_bgr_alt, sw_bgr]
+        decode_nv12 = [hw_nv12_primary, sw_nv12]
+        decode_bgr = [hw_bgr_primary, sw_bgr]
     elif mode == "hw":
-        decode_nv12 = [hw_nv12_primary, hw_nv12_alt]
-        decode_bgr = [hw_bgr_primary, hw_bgr_alt]
+        decode_nv12 = [hw_nv12_primary]
+        decode_bgr = [hw_bgr_primary]
     elif mode == "sw":
         decode_nv12 = [sw_nv12]
         decode_bgr = [sw_bgr]
@@ -185,13 +172,11 @@ def build_usb_gstreamer_split_lr_pipeline_pairs(
     mode = str(decode_mode).strip().lower()
     if mode == "auto":
         decode_stages = [
-            ("jpegparse ! mppjpegdec ! videoconvert n-threads=2", "hw+jpegparse"),
             ("mppjpegdec ! videoconvert n-threads=2", "hw"),
             ("jpegdec ! videoconvert n-threads=2", "sw"),
         ]
     elif mode == "hw":
         decode_stages = [
-            ("jpegparse ! mppjpegdec ! videoconvert n-threads=2", "hw+jpegparse"),
             ("mppjpegdec ! videoconvert n-threads=2", "hw"),
         ]
     elif mode == "sw":
