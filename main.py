@@ -204,6 +204,18 @@ def main() -> None:
     perf = PerfStats()
     window_sized = False
     screen_size = get_screen_size()
+    profile_stages = bool(getattr(args, "profile_stages", False))
+    profile_interval = max(1, int(getattr(args, "profile_interval", 60)))
+    stage_acc = {
+        "capture": 0.0,
+        "rectify": 0.0,
+        "preprocess": 0.0,
+        "disparity": 0.0,
+        "depth": 0.0,
+        "viz": 0.0,
+        "total": 0.0,
+    }
+    stage_count = 0
     last_switch_latency_ms: Optional[float] = None
     last_switch_breakdown: Optional[dict] = None
     switch_pending: Optional[dict] = None
@@ -277,6 +289,7 @@ def main() -> None:
                     time.sleep(0.01)
                     continue
                 left, right, frame_ts, active_idx = last_good_frame
+            t_capture = time.perf_counter()
 
             if switch_pending is not None:
                 pending_idx = int(switch_pending["to_idx"])
@@ -326,9 +339,11 @@ def main() -> None:
 
             # 2) Geometric rectification.
             left_rect, right_rect = rectify_pair(left, right, rect)
+            t_rectify = time.perf_counter()
 
             # 3) Runtime preprocess (resize + grayscale), optionally RGA-backed.
             left_rect, right_rect, gray_l, gray_r = preprocessor.process(left_rect, right_rect)
+            t_preprocess = time.perf_counter()
 
             roi_scaled = ROI(
                 x=int(roi.x * runtime_cfg.scale),
@@ -353,6 +368,7 @@ def main() -> None:
                 disparity[ys, xs] = disp_crop
             else:
                 disparity = disp_estimator.compute(gray_l, gray_r)
+            t_disparity = time.perf_counter()
 
             # 5) Convert disparity to metric depth and gather ROI stats.
             depth_map = depth_estimator.disparity_to_depth(disparity)
@@ -390,7 +406,10 @@ def main() -> None:
                 min_disp=float(args.min_disp),
                 max_disp=float(args.min_disp + effective_num_disp),
             )
-            left_viz = draw_roi(left_rect, roi_scaled)
+            left_viz_src = left_rect
+            if left_viz_src.ndim == 2 or (left_viz_src.ndim == 3 and left_viz_src.shape[2] == 1):
+                left_viz_src = cv2.cvtColor(left_viz_src, cv2.COLOR_GRAY2BGR)
+            left_viz = draw_roi(left_viz_src, roi_scaled)
 
             if distance_filtered is not None:
                 left_viz = draw_text(left_viz, f"ROI Distance: {distance_filtered * 1000.0:.1f} mm", (10, 30), (0, 255, 0))
@@ -463,6 +482,7 @@ def main() -> None:
                 left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 270), (200, 255, 200))
             else:
                 left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 270), (0, 0, 255))
+            t_depth = time.perf_counter()
 
             # Optional per-pixel inspection from last mouse click.
             if viz_state.clicked_px is not None:
@@ -486,6 +506,30 @@ def main() -> None:
                     cv2.moveWindow(win, pos_x, pos_y)
                 window_sized = True
             cv2.imshow(win, stack)
+            t_viz = time.perf_counter()
+
+            if profile_stages:
+                stage_acc["capture"] += (t_capture - t0) * 1000.0
+                stage_acc["rectify"] += (t_rectify - t_capture) * 1000.0
+                stage_acc["preprocess"] += (t_preprocess - t_rectify) * 1000.0
+                stage_acc["disparity"] += (t_disparity - t_preprocess) * 1000.0
+                stage_acc["depth"] += (t_depth - t_disparity) * 1000.0
+                stage_acc["viz"] += (t_viz - t_depth) * 1000.0
+                stage_acc["total"] += (t_viz - t0) * 1000.0
+                stage_count += 1
+                if stage_count >= profile_interval:
+                    print(
+                        "[PROFILE] avg_ms "
+                        f"capture={stage_acc['capture'] / stage_count:.2f} "
+                        f"rectify={stage_acc['rectify'] / stage_count:.2f} "
+                        f"preprocess={stage_acc['preprocess'] / stage_count:.2f} "
+                        f"disparity={stage_acc['disparity'] / stage_count:.2f} "
+                        f"depth={stage_acc['depth'] / stage_count:.2f} "
+                        f"viz={stage_acc['viz'] / stage_count:.2f} "
+                        f"total={stage_acc['total'] / stage_count:.2f}"
+                    )
+                    stage_acc = {k: 0.0 for k in stage_acc}
+                    stage_count = 0
 
             # Keyboard shortcuts: s toggles left/right swap, 1-9 switches input, n selects next input, q/esc exits.
             key_raw = cv2.waitKeyEx(1)

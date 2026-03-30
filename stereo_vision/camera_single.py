@@ -208,6 +208,48 @@ class StereoCamera:
 
         return cv2.cvtColor(in_frame, cv2.COLOR_YUV2BGR_NV12)
 
+    def _split_nv12_stereo_to_gray(self, frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Split side-by-side NV12 frame into left/right grayscale images.
+
+        For NV12, the first H rows are the Y plane, which is already grayscale.
+        Using Y directly avoids per-frame full BGR conversion.
+        """
+        in_frame = frame
+        if in_frame.ndim == 3 and in_frame.shape[2] == 1:
+            in_frame = in_frame[:, :, 0]
+
+        # Some OpenCV/GStreamer combinations may still return BGR.
+        if in_frame.ndim == 3 and in_frame.shape[2] == 3:
+            bgr_h, bgr_w = in_frame.shape[:2]
+            if bgr_w % 2 != 0:
+                raise ValueError(f"Expected combined frame width to be even, got {bgr_w}")
+            half = bgr_w // 2
+            left_gray = cv2.cvtColor(in_frame[:, :half], cv2.COLOR_BGR2GRAY)
+            right_gray = cv2.cvtColor(in_frame[:, half:], cv2.COLOR_BGR2GRAY)
+            return left_gray, right_gray
+
+        if in_frame.ndim != 2:
+            raise RuntimeError(
+                "Unexpected NV12 frame layout from GStreamer appsink: "
+                f"shape={frame.shape}. Try --gst-output bgr"
+            )
+
+        h3_2, w = in_frame.shape[:2]
+        if h3_2 % 3 != 0:
+            raise RuntimeError(
+                "Unexpected NV12 frame height from GStreamer appsink: "
+                f"shape={frame.shape}. Try --gst-output bgr"
+            )
+        if w % 2 != 0:
+            raise ValueError(f"Expected combined frame width to be even, got {w}")
+
+        h = (h3_2 * 2) // 3
+        y_plane = in_frame[:h, :]
+        half = w // 2
+        left_gray = y_plane[:, :half]
+        right_gray = y_plane[:, half:]
+        return left_gray, right_gray
+
     def open(self) -> None:
         """Open camera stream and warm it up before first use.
 
@@ -329,23 +371,27 @@ class StereoCamera:
         if not ok or frame is None:
             raise RuntimeError("Failed to read camera frame")
 
-        frame = self._convert_gstreamer_frame_if_needed(frame)
+        if self.cfg.use_gstreamer and self._gst_selected_pipeline and "format=NV12" in self._gst_selected_pipeline:
+            left, right = self._split_nv12_stereo_to_gray(frame)
+            w = left.shape[1] + right.shape[1]
+        else:
+            frame = self._convert_gstreamer_frame_if_needed(frame)
+            # Height is kept for readability and potential future validation hooks.
+            h, w = frame.shape[:2]
+            if w % 2 != 0:
+                raise ValueError(f"Expected combined frame width to be even, got {w}")
 
-        # Height is kept for readability and potential future validation hooks.
-        h, w = frame.shape[:2]
+            # Input frame is expected to be side-by-side: left half + right half.
+            half = w // 2
+            left = frame[:, :half]
+            right = frame[:, half:]
+
         min_expected_w = max(2, int(self.cfg.width * 0.75))
         if w < min_expected_w:
             raise RuntimeError(
                 "Captured frame width is smaller than expected stereo width: "
                 f"got {w}, expected around {self.cfg.width}"
             )
-        if w % 2 != 0:
-            raise ValueError(f"Expected combined frame width to be even, got {w}")
-
-        # Input frame is expected to be side-by-side: left half + right half.
-        half = w // 2
-        left = frame[:, :half]
-        right = frame[:, half:]
 
         self.last_ts = time.perf_counter()
         return left, right, self.last_ts

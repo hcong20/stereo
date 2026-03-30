@@ -125,18 +125,29 @@ class FramePreprocessor:
             out = np.ascontiguousarray(out)
         return out
 
+    @staticmethod
+    def _to_gray_if_needed(frame: np.ndarray) -> np.ndarray:
+        """Return grayscale view of input frame with minimal conversion."""
+        if frame.ndim == 2:
+            return frame
+        if frame.ndim == 3 and frame.shape[2] == 1:
+            return frame[:, :, 0]
+        if frame.ndim == 3 and frame.shape[2] == 3:
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        raise ValueError(f"Unsupported frame shape for grayscale conversion: {frame.shape}")
+
     def process(
-        self, left_bgr: np.ndarray, right_bgr: np.ndarray
+        self, left_img: np.ndarray, right_img: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Resize and convert stereo pair to grayscale for disparity.
+        """Resize stereo pair and produce grayscale images for disparity.
 
         Returns:
-            (left_resized_bgr, right_resized_bgr, left_gray, right_gray)
+            (left_resized, right_resized, left_gray, right_gray)
         """
         if self._resolved_backend == "rga" and self._rga_backend is not None:
             try:
-                left_in = self._prepare_rga_input(left_bgr)
-                right_in = self._prepare_rga_input(right_bgr)
+                left_in = self._prepare_rga_input(left_img)
+                right_in = self._prepare_rga_input(right_img)
                 return self._rga_backend.preprocess_pair_bgr_to_gray(
                     left_in, right_in, float(self.cfg.scale)
                 )
@@ -148,8 +159,8 @@ class FramePreprocessor:
                     print(f"[WARN] {self._backend_reason}")
                     self._runtime_fallback_logged = True
 
-        left_resized = self._cpu_resize(left_bgr, float(self.cfg.scale))
-        right_resized = self._cpu_resize(right_bgr, float(self.cfg.scale))
-        left_gray = cv2.cvtColor(left_resized, cv2.COLOR_BGR2GRAY)
-        right_gray = cv2.cvtColor(right_resized, cv2.COLOR_BGR2GRAY)
+        left_resized = self._cpu_resize(left_img, float(self.cfg.scale))
+        right_resized = self._cpu_resize(right_img, float(self.cfg.scale))
+        left_gray = self._to_gray_if_needed(left_resized)
+        right_gray = self._to_gray_if_needed(right_resized)
         return left_resized, right_resized, left_gray, right_gray

@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="/dev/video20")
     parser.add_argument(
         "--devices",
-        default="/dev/video20,/dev/video22,/dev/video24,/dev/video26",
+        default="/dev/video24,/dev/video26",
         help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
     )
     parser.add_argument(
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--bus-groups",
-        default="0,0,2,2",
+        default="0,0",
         help=(
             "Comma-separated bus/group label for each input device, "
             "e.g. 0,0,2,2 for 4 inputs. "
@@ -156,6 +156,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-jump", type=float, default=1.0)
     parser.add_argument("--filter-window", type=int, default=5)
     parser.add_argument("--min-valid-pixels", type=int, default=10)
+    parser.add_argument(
+        "--profile-stages",
+        action="store_true",
+        help="Print per-stage average latency (capture/rectify/preprocess/disparity/depth/viz)",
+    )
+    parser.add_argument(
+        "--profile-interval",
+        type=int,
+        default=60,
+        help="Frames per profiling report when --profile-stages is enabled",
+    )
 
     return parser.parse_args()
 

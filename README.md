@@ -122,6 +122,9 @@ is unavailable.
 It also prefers NV12 output path first (lower CPU pipeline) and falls back to
 BGR output when NV12 negotiation or frame layout is unsupported.
 
+In NV12 mode, the runtime now consumes the Y plane directly for stereo matching
+grayscale input to avoid full-frame per-frame BGR conversion in the capture path.
+
 Force decode mode explicitly:
 
 ```bash
