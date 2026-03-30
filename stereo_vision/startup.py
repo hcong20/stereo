@@ -45,9 +45,6 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
     active_idx = 0
     bus_groups = _parse_bus_groups(getattr(args, "bus_groups", ""), len(device_list))
     gst_pipeline_template = str(getattr(args, "gstreamer_pipeline", "") or "").strip()
-    gst_split_scale_arg = getattr(args, "gst_split_scale", None)
-    gst_split_scale = 0.5 if gst_split_scale_arg is None else float(gst_split_scale_arg)
-    gst_split_lr = bool(getattr(args, "gst_split_lr", False) or (gst_split_scale_arg is not None))
 
     def resolve_gst_pipeline(device: str) -> Optional[str]:
         if gst_pipeline_template == "":
@@ -75,8 +72,6 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
             gstreamer_pipeline=resolve_gst_pipeline(device),
             gstreamer_decode=str(getattr(args, "gst_decode", "auto")),
             gstreamer_output=str(getattr(args, "gst_output", "auto")),
-            gstreamer_split_lr=gst_split_lr,
-            gstreamer_split_scale=gst_split_scale,
             warmup_frames=max(0, int(args.warmup_frames)),
         )
         for device in device_list

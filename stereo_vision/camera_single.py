@@ -24,8 +24,6 @@ class CameraConfig:
         gstreamer_pipeline: Optional explicit pipeline string.
         gstreamer_decode: GStreamer decode mode (auto/hw/sw) when pipeline is not explicit.
         gstreamer_output: Preferred GStreamer output path (auto/nv12/bgr).
-        gstreamer_split_lr: When True, use two appsinks (left/right) with in-pipeline crop.
-        gstreamer_split_scale: Scale applied inside split LR GStreamer path.
         warmup_frames: Frames to discard after open.
     """
 
@@ -37,8 +35,6 @@ class CameraConfig:
     gstreamer_pipeline: Optional[str] = None
     gstreamer_decode: str = "auto"
     gstreamer_output: str = "auto"
-    gstreamer_split_lr: bool = False
-    gstreamer_split_scale: float = 0.5
     warmup_frames: int = 1
     fast_reopen: bool = True
 
@@ -147,69 +143,6 @@ def build_usb_gstreamer_pipeline(device: str, width: int, height: int, fps: int)
     )[0]
 
 
-def build_usb_gstreamer_split_lr_pipeline_pairs(
-    device: str,
-    width: int,
-    height: int,
-    fps: int,
-    decode_mode: str = "auto",
-    scale: float = 0.5,
-) -> list[tuple[str, str, str]]:
-    """Build candidate left/right split pipelines with independent appsinks.
-
-    Returns list of tuples: (left_pipeline, right_pipeline, label)
-    """
-    if int(width) % 2 != 0:
-        raise ValueError(f"Split LR mode expects even combined width, got {width}")
-
-    half_w = int(width) // 2
-    s = float(scale)
-    if not 0.1 <= s <= 1.0:
-        raise ValueError("gstreamer_split_scale must be in [0.1, 1.0]")
-    out_w = max(1, int(half_w * s))
-    out_h = max(1, int(int(height) * s))
-
-    mode = str(decode_mode).strip().lower()
-    if mode == "auto":
-        decode_stages = [
-            ("mppjpegdec ! videoconvert n-threads=2", "hw"),
-            ("jpegdec ! videoconvert n-threads=2", "sw"),
-        ]
-    elif mode == "hw":
-        decode_stages = [
-            ("mppjpegdec ! videoconvert n-threads=2", "hw"),
-        ]
-    elif mode == "sw":
-        decode_stages = [
-            ("jpegdec ! videoconvert n-threads=2", "sw"),
-        ]
-    else:
-        raise ValueError("gstreamer_decode must be one of: auto, hw, sw")
-
-    pairs: list[tuple[str, str, str]] = []
-    for decode_stage, label in decode_stages:
-        left = (
-            f"v4l2src device={device} io-mode=2 ! "
-            f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-            f"{decode_stage} ! "
-            f"videocrop left=0 right={half_w} top=0 bottom=0 ! "
-            "videoscale ! "
-            f"video/x-raw,format=GRAY8,width={out_w},height={out_h} ! "
-            "appsink drop=true max-buffers=1 sync=false"
-        )
-        right = (
-            f"v4l2src device={device} io-mode=2 ! "
-            f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-            f"{decode_stage} ! "
-            f"videocrop left={half_w} right=0 top=0 bottom=0 ! "
-            "videoscale ! "
-            f"video/x-raw,format=GRAY8,width={out_w},height={out_h} ! "
-            "appsink drop=true max-buffers=1 sync=false"
-        )
-        pairs.append((left, right, label))
-    return pairs
-
-
 class StereoCamera:
     """Capture combined stereo frame and split into left/right images.
 
@@ -221,15 +154,9 @@ class StereoCamera:
         """Initialize camera wrapper with immutable capture configuration."""
         self.cfg = cfg
         self.cap: Optional[cv2.VideoCapture] = None
-        self.cap_left: Optional[cv2.VideoCapture] = None
-        self.cap_right: Optional[cv2.VideoCapture] = None
         self.last_ts: float = 0.0
         self._configured_once = False
         self._gst_selected_pipeline: Optional[str] = None
-        self._gst_selected_right_pipeline: Optional[str] = None
-        self._gst_split_lr_active = False
-        self._gst_split_scale_fallback_active = False
-        self._gst_split_scale_fallback_logged = False
 
     @staticmethod
     def _short_pipeline_text(text: str, max_len: int = 180) -> str:
@@ -370,68 +297,7 @@ class StereoCamera:
         """
         was_configured = self._configured_once
         if self.cfg.use_gstreamer:
-            if bool(self.cfg.gstreamer_split_lr) and not self.cfg.gstreamer_pipeline:
-                pairs = build_usb_gstreamer_split_lr_pipeline_pairs(
-                    self.cfg.device,
-                    self.cfg.width,
-                    self.cfg.height,
-                    self.cfg.fps,
-                    decode_mode=self.cfg.gstreamer_decode,
-                    scale=float(self.cfg.gstreamer_split_scale),
-                )
-                self.cap_left = None
-                self.cap_right = None
-                selected_idx = -1
-                selected_label = ""
-                for idx, (left_p, right_p, label) in enumerate(pairs):
-                    lcap = cv2.VideoCapture(left_p, cv2.CAP_GSTREAMER)
-                    rcap = cv2.VideoCapture(right_p, cv2.CAP_GSTREAMER)
-                    if lcap is not None and rcap is not None and lcap.isOpened() and rcap.isOpened():
-                        self.cap_left = lcap
-                        self.cap_right = rcap
-                        # Keep cap non-None for compatibility with buffered camera open checks.
-                        self.cap = self.cap_left
-                        self._gst_selected_pipeline = left_p
-                        self._gst_selected_right_pipeline = right_p
-                        selected_idx = idx
-                        selected_label = label
-                        self._gst_split_lr_active = True
-                        break
-                    if lcap is not None:
-                        lcap.release()
-                    if rcap is not None:
-                        rcap.release()
-
-                if self.cap_left is None or self.cap_right is None:
-                    attempted_labels = [p[2] for p in pairs]
-                    print(
-                        "[WARN] Split LR GStreamer open failed; "
-                        "falling back to single-appsink pipeline. "
-                        f"device={self.cfg.device}, decode={self.cfg.gstreamer_decode}, "
-                        f"scale={self.cfg.gstreamer_split_scale}, attempts={attempted_labels}"
-                    )
-                    self._gst_split_lr_active = False
-                    self.cap_left = None
-                    self.cap_right = None
-                    self._gst_selected_right_pipeline = None
-                    self._gst_split_scale_fallback_active = True
-                    self._open_gstreamer_single_pipeline()
-                else:
-                    if str(self.cfg.gstreamer_decode).strip().lower() == "auto" and selected_idx > 0:
-                        print(
-                            "[WARN] Preferred RK3588 hardware split decode pipeline was unavailable; "
-                            f"fallback candidate index={selected_idx + 1}/{len(pairs)}"
-                        )
-                    print(
-                        "[INFO] GStreamer split pipelines selected: "
-                        f"decode={self.cfg.gstreamer_decode}, output=gray, "
-                        f"scale={self.cfg.gstreamer_split_scale}, candidate={selected_idx + 1}/{len(pairs)}, "
-                        f"label={selected_label}"
-                    )
-                    print(f"[INFO] gst_pipeline_left={self._short_pipeline_text(self._gst_selected_pipeline or '')}")
-                    print(f"[INFO] gst_pipeline_right={self._short_pipeline_text(self._gst_selected_right_pipeline or '')}")
-            else:
-                self._open_gstreamer_single_pipeline()
+            self._open_gstreamer_single_pipeline()
         else:
             self.cap = cv2.VideoCapture(self.cfg.device, cv2.CAP_V4L2)
 
@@ -492,14 +358,6 @@ class StereoCamera:
         if self.cap is None:
             raise RuntimeError("Camera is not open")
 
-        if self._gst_split_lr_active and self.cap_left is not None and self.cap_right is not None:
-            ok_l, left = self.cap_left.read()
-            ok_r, right = self.cap_right.read()
-            if not ok_l or left is None or not ok_r or right is None:
-                raise RuntimeError("Failed to read split LR GStreamer frames")
-            self.last_ts = time.perf_counter()
-            return left, right, self.last_ts
-
         ok, frame = self.cap.read()
         if not ok or frame is None:
             raise RuntimeError("Failed to read camera frame")
@@ -526,37 +384,11 @@ class StereoCamera:
                 f"got {w}, expected around {self.cfg.width}"
             )
 
-        # If split-LR was requested but dual-appsink is unsupported, still honor
-        # gst-split-scale by resizing left/right outputs in CPU fallback mode.
-        if self._gst_split_scale_fallback_active:
-            s = float(self.cfg.gstreamer_split_scale)
-            if 0.0 < s < 1.0:
-                in_h, in_w = left.shape[:2]
-                out_w = max(1, int(in_w * s))
-                out_h = max(1, int(in_h * s))
-                left = cv2.resize(left, (out_w, out_h), interpolation=cv2.INTER_AREA)
-                right = cv2.resize(right, (out_w, out_h), interpolation=cv2.INTER_AREA)
-                if not self._gst_split_scale_fallback_logged:
-                    print(
-                        "[INFO] Split-scale fallback active: "
-                        f"resizing stereo halves in CPU from {in_w}x{in_h} to {out_w}x{out_h}"
-                    )
-                    self._gst_split_scale_fallback_logged = True
-
         self.last_ts = time.perf_counter()
         return left, right, self.last_ts
 
     def release(self) -> None:
         """Release camera resources if a stream is currently open."""
-        if self.cap_left is not None:
-            self.cap_left.release()
-            self.cap_left = None
-        if self.cap_right is not None:
-            self.cap_right.release()
-            self.cap_right = None
         if self.cap is not None:
             self.cap.release()
             self.cap = None
-        self._gst_split_lr_active = False
-        self._gst_split_scale_fallback_active = False
-        self._gst_split_scale_fallback_logged = False
