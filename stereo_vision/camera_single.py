@@ -243,6 +243,8 @@ class StereoCamera:
         self._gst_selected_pipeline: Optional[str] = None
         self._gst_selected_right_pipeline: Optional[str] = None
         self._gst_split_lr_active = False
+        self._gst_split_scale_fallback_active = False
+        self._gst_split_scale_fallback_logged = False
 
     @staticmethod
     def _short_pipeline_text(text: str, max_len: int = 180) -> str:
@@ -427,6 +429,7 @@ class StereoCamera:
                     self.cap_left = None
                     self.cap_right = None
                     self._gst_selected_right_pipeline = None
+                    self._gst_split_scale_fallback_active = True
                     self._open_gstreamer_single_pipeline()
                 else:
                     if str(self.cfg.gstreamer_decode).strip().lower() == "auto" and selected_idx > 0:
@@ -538,6 +541,23 @@ class StereoCamera:
                 f"got {w}, expected around {self.cfg.width}"
             )
 
+        # If split-LR was requested but dual-appsink is unsupported, still honor
+        # gst-split-scale by resizing left/right outputs in CPU fallback mode.
+        if self._gst_split_scale_fallback_active:
+            s = float(self.cfg.gstreamer_split_scale)
+            if 0.0 < s < 1.0:
+                in_h, in_w = left.shape[:2]
+                out_w = max(1, int(in_w * s))
+                out_h = max(1, int(in_h * s))
+                left = cv2.resize(left, (out_w, out_h), interpolation=cv2.INTER_AREA)
+                right = cv2.resize(right, (out_w, out_h), interpolation=cv2.INTER_AREA)
+                if not self._gst_split_scale_fallback_logged:
+                    print(
+                        "[INFO] Split-scale fallback active: "
+                        f"resizing stereo halves in CPU from {in_w}x{in_h} to {out_w}x{out_h}"
+                    )
+                    self._gst_split_scale_fallback_logged = True
+
         self.last_ts = time.perf_counter()
         return left, right, self.last_ts
 
@@ -553,3 +573,5 @@ class StereoCamera:
             self.cap.release()
             self.cap = None
         self._gst_split_lr_active = False
+        self._gst_split_scale_fallback_active = False
+        self._gst_split_scale_fallback_logged = False

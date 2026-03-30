@@ -151,6 +151,8 @@ Split left/right inside GStreamer (two appsinks) and scale to 0.5 before OpenCV:
 python3 main.py --gst-split-lr --gst-split-scale 0.5
 ```
 
+You can also pass only `--gst-split-scale`; it implicitly enables split-LR mode.
+
 This mode crops left/right in pipeline and feeds OpenCV with already split frames.
 If opening two appsinks on the same camera node is unsupported by the driver,
 the app automatically falls back to the standard single-appsink pipeline.

@@ -162,6 +162,7 @@ def main() -> None:
             speckle_range=2,
         )
     )
+    active_num_disp = effective_num_disp
 
     distance_filter = DistanceFilter(
         TemporalFilterConfig(
@@ -353,6 +354,29 @@ def main() -> None:
             ).clamp(gray_l.shape[1], gray_l.shape[0])
 
             # 4) Disparity either on full frame or constrained ROI.
+            if not runtime_cfg.disparity_roi_only:
+                max_safe_full = ((max(0, int(gray_l.shape[1])) // 16) - 1) * 16
+                if max_safe_full >= 16 and active_num_disp > max_safe_full:
+                    old_num_disp = active_num_disp
+                    active_num_disp = max_safe_full
+                    disp_estimator = StereoDisparityEstimator(
+                        SGBMConfig(
+                            min_disparity=int(args.min_disp),
+                            num_disparities=active_num_disp,
+                            block_size=int(args.block_size),
+                            p1=8 * 1 * int(args.block_size) * int(args.block_size),
+                            p2=32 * 1 * int(args.block_size) * int(args.block_size),
+                            uniqueness_ratio=10,
+                            speckle_window_size=80,
+                            speckle_range=2,
+                        )
+                    )
+                    print(
+                        "[WARN] Runtime frame width is small for current --num-disp; "
+                        f"adjusting num-disp from {old_num_disp} to {active_num_disp} "
+                        f"for width={gray_l.shape[1]}"
+                    )
+
             if runtime_cfg.disparity_roi_only:
                 crop_l, crop_r, roi_used = crop_for_disparity(gray_l, gray_r, roi_scaled)
                 try:

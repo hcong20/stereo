@@ -105,8 +105,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gst-split-scale",
         type=float,
-        default=0.5,
-        help="Scale factor for --gst-split-lr branch output (default: 0.5)",
+        default=None,
+        help=(
+            "Scale factor for split-LR branch output; providing this flag also enables "
+            "--gst-split-lr (default scale: 0.5)"
+        ),
     )
     parser.add_argument(
         "--quiet-opencv-log",
