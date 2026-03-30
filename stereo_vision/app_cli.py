@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="/dev/video20")
     parser.add_argument(
         "--devices",
-        default="/dev/video24,/dev/video26",
+        default="/dev/video20,/dev/video22,/dev/video24,/dev/video26",
         help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
     )
     parser.add_argument(
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--bus-groups",
-        default="0,0",
+        default="0,0,2,2",
         help=(
             "Comma-separated bus/group label for each input device, "
             "e.g. 0,0,2,2 for 4 inputs. "
@@ -67,14 +67,8 @@ def parse_args() -> argparse.Namespace:
         "--gstreamer",
         dest="gstreamer",
         action="store_true",
-        default=True,
-        help="Use OpenCV CAP_GSTREAMER backend for camera capture (default: enabled)",
-    )
-    parser.add_argument(
-        "--no-gstreamer",
-        dest="gstreamer",
-        action="store_false",
-        help="Disable GStreamer and use OpenCV CAP_V4L2 backend",
+        default=False,
+        help="Use OpenCV CAP_GSTREAMER backend for camera capture (default: disabled)",
     )
     parser.add_argument(
         "--gstreamer-pipeline",

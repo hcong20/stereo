@@ -109,10 +109,10 @@ python3 main.py \
   --scale 1.0
 ```
 
-Default capture backend is OpenCV + GStreamer. To force V4L2 backend:
+Default capture backend is OpenCV V4L2. To enable GStreamer backend:
 
 ```bash
-python3 main.py --no-gstreamer --device /dev/video0 --calib stereo_calib_params.npz
+python3 main.py --gstreamer --device /dev/video0 --calib stereo_calib_params.npz
 ```
 
 By default, GStreamer capture now prefers RK3588 hardware MJPEG decode (`mppjpegdec`)
