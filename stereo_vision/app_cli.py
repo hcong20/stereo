@@ -104,6 +104,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--gst-split-lr",
+        action="store_true",
+        help="Use two GStreamer appsinks (left/right) with in-pipeline crop before OpenCV",
+    )
+    parser.add_argument(
+        "--gst-split-scale",
+        type=float,
+        default=0.5,
+        help="Scale factor for --gst-split-lr branch output (default: 0.5)",
+    )
+    parser.add_argument(
         "--quiet-opencv-log",
         dest="quiet_opencv_log",
         action="store_true",

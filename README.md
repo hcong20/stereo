@@ -145,6 +145,16 @@ python3 main.py --gst-output nv12
 python3 main.py --gst-output bgr
 ```
 
+Split left/right inside GStreamer (two appsinks) and scale to 0.5 before OpenCV:
+
+```bash
+python3 main.py --gst-split-lr --gst-split-scale 0.5
+```
+
+This mode crops left/right in pipeline and feeds OpenCV with already split frames.
+If opening two appsinks on the same camera node is unsupported by the driver,
+the app automatically falls back to the standard single-appsink pipeline.
+
 For custom GStreamer capture pipeline:
 
 ```bash
