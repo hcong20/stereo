@@ -290,6 +290,18 @@ class MultiStereoCamera:
 
         raise RuntimeError("Unexpected read state")
 
+    def get_latest_preview(
+        self,
+        source_index: Optional[int] = None,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, float, int, int]]:
+        """Return latest preview-only BGR frame for requested (or active) source."""
+        idx = self.active_index() if source_index is None else clamp_index(source_index, len(self.sources))
+        latest = self.sources[idx].get_latest_preview()
+        if latest is None:
+            return None
+        left, right, ts, frame_id = latest
+        return left, right, ts, frame_id, idx
+
     def release(self) -> None:
         """Stop all sources and release devices."""
         for src in self.sources:

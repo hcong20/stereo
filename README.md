@@ -125,6 +125,12 @@ BGR output when NV12 negotiation or frame layout is unsupported.
 In NV12 mode, the runtime now consumes the Y plane directly for stereo matching
 grayscale input to avoid full-frame per-frame BGR conversion in the capture path.
 
+If you want color preview while keeping NV12 grayscale matching path, enable:
+
+```bash
+python3 main.py --gstreamer --gst-output nv12 --nv12-preview-bgr
+```
+
 Force decode mode explicitly:
 
 ```bash

@@ -201,6 +201,10 @@ def main() -> None:
     )
     print(f"[INFO] preprocess_backend={preprocessor.backend_name}")
     print(f"[INFO] preprocess_detail={preprocessor.backend_reason}")
+    preview_nv12_bgr = bool(getattr(args, "nv12_preview_bgr", False))
+    if preview_nv12_bgr:
+        print("[INFO] NV12 preview color mode enabled (preview-only BGR conversion)")
+    preview_nv12_warned = False
 
     swap_lr = bool(args.swap_lr)
     viz_state = VizState()
@@ -252,8 +256,22 @@ def main() -> None:
                 active_idx=active_idx,
                 frame_ts=frame_ts,
             )
+
+            preview_pair_raw = None
+            if preview_nv12_bgr:
+                if multi_mode and hasattr(cam, "get_latest_preview"):
+                    preview_packet = cam.get_latest_preview(active_idx)
+                    if preview_packet is not None:
+                        p_left, p_right, p_ts, _, p_idx = preview_packet
+                        if int(p_idx) == int(active_idx) and abs(float(p_ts) - float(frame_ts)) <= 0.2:
+                            preview_pair_raw = (p_left, p_right)
+                elif hasattr(cam, "get_last_preview_pair"):
+                    preview_pair_raw = cam.get_last_preview_pair()
+
             if swap_lr:
                 left, right = right, left
+                if preview_pair_raw is not None:
+                    preview_pair_raw = (preview_pair_raw[1], preview_pair_raw[0])
 
             # 2) Geometric rectification.
             left_rect, right_rect = rectify_pair(left, right, rect)
@@ -342,8 +360,29 @@ def main() -> None:
             latency_ms = (time.perf_counter() - t0) * 1000.0
 
             # 7) Build visualization layers and on-screen diagnostics.
+            left_viz_source = left_rect
+            if preview_pair_raw is not None:
+                try:
+                    preview_left_raw, preview_right_raw = preview_pair_raw
+                    left_preview_rect, _ = rectify_pair(preview_left_raw, preview_right_raw, rect)
+                    target_h, target_w = left_rect.shape[:2]
+                    if left_preview_rect.shape[:2] != (target_h, target_w):
+                        left_preview_rect = cv2.resize(
+                            left_preview_rect,
+                            (target_w, target_h),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    left_viz_source = left_preview_rect
+                except Exception as exc:
+                    if not preview_nv12_warned:
+                        print(
+                            "[WARN] Preview-only NV12->BGR conversion failed; "
+                            f"continuing with grayscale preview: {exc}"
+                        )
+                        preview_nv12_warned = True
+
             left_viz, disp_vis = build_viz_layers(
-                left_rect=left_rect,
+                left_rect=left_viz_source,
                 disparity=disparity,
                 roi_scaled=roi_scaled,
                 min_disp=float(args.min_disp),

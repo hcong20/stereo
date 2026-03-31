@@ -98,6 +98,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--nv12-preview-bgr",
+        action="store_true",
+        help=(
+            "When using NV12 GStreamer output, convert frames to BGR for preview only "
+            "while keeping grayscale matching path"
+        ),
+    )
+    parser.add_argument(
         "--quiet-opencv-log",
         dest="quiet_opencv_log",
         action="store_true",

@@ -33,6 +33,7 @@ class CameraConfig:
         gstreamer_pipeline: Optional explicit pipeline string.
         gstreamer_decode: GStreamer decode mode (auto/hw/sw) when pipeline is not explicit.
         gstreamer_output: Preferred GStreamer output path (auto/nv12/bgr).
+        nv12_preview_bgr: Enable preview-only NV12-to-BGR conversion.
         warmup_frames: Frames to discard after open.
     """
 
@@ -44,6 +45,7 @@ class CameraConfig:
     gstreamer_pipeline: Optional[str] = None
     gstreamer_decode: str = "auto"
     gstreamer_output: str = "auto"
+    nv12_preview_bgr: bool = False
     warmup_frames: int = 1
     fast_reopen: bool = True
 
@@ -62,6 +64,12 @@ class StereoCamera:
         self.last_ts: float = 0.0
         self._configured_once = False
         self._gst_selected_pipeline: Optional[str] = None
+        self._last_preview_pair: Optional[Tuple[np.ndarray, np.ndarray]] = None
+        self._preview_warned = False
+
+    def get_last_preview_pair(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """Return latest preview-only BGR stereo pair if available."""
+        return self._last_preview_pair
 
     @staticmethod
     def _short_pipeline_text(text: str, max_len: int = 180) -> str:
@@ -196,7 +204,39 @@ class StereoCamera:
         if not ok or frame is None:
             raise RuntimeError("Failed to read camera frame")
 
+        self._last_preview_pair = None
         if self.cfg.use_gstreamer and self._gst_selected_pipeline and "format=NV12" in self._gst_selected_pipeline:
+            if bool(self.cfg.nv12_preview_bgr):
+                try:
+                    preview_bgr = convert_gstreamer_frame_if_needed(
+                        frame,
+                        use_gstreamer=True,
+                        selected_pipeline=self._gst_selected_pipeline,
+                    )
+                    if preview_bgr.ndim != 3 or preview_bgr.shape[2] != 3:
+                        raise RuntimeError(
+                            "Unexpected preview frame shape after NV12 conversion: "
+                            f"{preview_bgr.shape}"
+                        )
+                    preview_w = int(preview_bgr.shape[1])
+                    if preview_w % 2 != 0:
+                        raise ValueError(
+                            "Expected combined preview width to be even, "
+                            f"got {preview_w}"
+                        )
+                    preview_half = preview_w // 2
+                    self._last_preview_pair = (
+                        preview_bgr[:, :preview_half],
+                        preview_bgr[:, preview_half:],
+                    )
+                except Exception as exc:
+                    if not self._preview_warned:
+                        print(
+                            "[WARN] NV12 preview BGR conversion failed; "
+                            f"continuing with grayscale preview: {exc}"
+                        )
+                        self._preview_warned = True
+
             left, right = split_nv12_stereo_to_gray(frame)
             w = left.shape[1] + right.shape[1]
         else:

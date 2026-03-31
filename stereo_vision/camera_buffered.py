@@ -29,6 +29,7 @@ class BufferedStereoCamera:
         self._state_lock = threading.Lock()
         self._lock = threading.Lock()
         self._latest: Optional[Tuple[np.ndarray, np.ndarray, float, int]] = None
+        self._latest_preview: Optional[Tuple[np.ndarray, np.ndarray, float, int]] = None
         self._frame_id = 0
         self._last_error: Optional[str] = None
         self._last_open_ms: float = 0.0
@@ -72,8 +73,18 @@ class BufferedStereoCamera:
                 self._frame_id += 1
                 consecutive_failures = 0
                 reopen_backoff_s = 0.1
+                preview_pair = self._camera.get_last_preview_pair()
                 with self._lock:
                     self._latest = (left, right, ts, self._frame_id)
+                    if preview_pair is None:
+                        self._latest_preview = None
+                    else:
+                        self._latest_preview = (
+                            preview_pair[0],
+                            preview_pair[1],
+                            ts,
+                            self._frame_id,
+                        )
                     self._last_error = None
             except Exception as exc:
                 msg = str(exc)
@@ -104,6 +115,11 @@ class BufferedStereoCamera:
         """Return latest captured stereo pair and monotonically increasing frame id."""
         with self._lock:
             return self._latest
+
+    def get_latest_preview(self) -> Optional[Tuple[np.ndarray, np.ndarray, float, int]]:
+        """Return latest preview-only BGR pair and monotonically increasing frame id."""
+        with self._lock:
+            return self._latest_preview
 
     def get_last_error(self) -> Optional[str]:
         """Return last capture/open error message for diagnostics."""

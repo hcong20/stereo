@@ -72,6 +72,7 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
             gstreamer_pipeline=resolve_gst_pipeline(device),
             gstreamer_decode=str(getattr(args, "gst_decode", "auto")),
             gstreamer_output=str(getattr(args, "gst_output", "auto")),
+            nv12_preview_bgr=bool(getattr(args, "nv12_preview_bgr", False)),
             warmup_frames=max(0, int(args.warmup_frames)),
         )
         for device in device_list
