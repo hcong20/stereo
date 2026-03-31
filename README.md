@@ -150,7 +150,7 @@ For custom GStreamer capture pipeline:
 ```bash
 python3 main.py \
   --device /dev/video0 \
-  --gstreamer-pipeline "v4l2src device={device} io-mode=2 ! image/jpeg,width={width},height={height},framerate={fps}/1 ! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false" \
+  --gstreamer-pipeline "v4l2src device={device} io-mode=2 ! image/jpeg,width={width},height={height},framerate={fps}/1 ! jpegdec ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false" \
   --calib stereo_calib_params.npz
 ```
 

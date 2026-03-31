@@ -2,17 +2,20 @@
 
 
 def _build_usb_gstreamer_sw_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build software MJPEG decode pipeline for broad compatibility."""
+    """Build software MJPEG decode pipeline with direct BGR output."""
     return (
         f"v4l2src device={device} io-mode=2 ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "jpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
+        "jpegdec ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
 
 
 def _build_usb_gstreamer_hw_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build RK3588 hardware MJPEG decode pipeline via Rockchip MPP."""
+    """Build RK3588 hardware MJPEG decode pipeline to BGR output.
+
+    On tested RK3588 setups, videoconvert is required for stable BGR negotiation.
+    """
     return (
         f"v4l2src device={device} io-mode=2 ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
@@ -26,13 +29,16 @@ def _build_usb_gstreamer_hw_nv12_pipeline(device: str, width: int, height: int, 
     return (
         f"v4l2src device={device} io-mode=2 ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=NV12 ! "
+        "mppjpegdec ! video/x-raw,format=NV12 ! "
         "appsink drop=true max-buffers=1 sync=false"
     )
 
 
 def _build_usb_gstreamer_sw_nv12_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build software MJPEG decode pipeline to NV12 output."""
+    """Build software MJPEG decode pipeline to NV12 output.
+
+    On tested setups, software decode requires videoconvert for NV12 output.
+    """
     return (
         f"v4l2src device={device} io-mode=2 ! "
         f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
