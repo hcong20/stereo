@@ -10,6 +10,15 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from stereo_vision.frame_formats import (
+    convert_gstreamer_frame_if_needed,
+    split_nv12_stereo_to_gray,
+)
+from stereo_vision.gstreamer_pipelines import (
+    build_usb_gstreamer_pipeline,
+    build_usb_gstreamer_pipeline_candidates,
+)
+
 
 @dataclass
 class CameraConfig:
@@ -39,110 +48,6 @@ class CameraConfig:
     fast_reopen: bool = True
 
 
-def _build_usb_gstreamer_sw_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build software MJPEG decode pipeline for broad compatibility."""
-    return (
-        f"v4l2src device={device} io-mode=2 ! "
-        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "jpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    )
-
-
-def _build_usb_gstreamer_hw_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build RK3588 hardware MJPEG decode pipeline via Rockchip MPP (no jpegparse)."""
-    return (
-        f"v4l2src device={device} io-mode=2 ! "
-        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=BGR ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    )
-
-
-def _build_usb_gstreamer_hw_nv12_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build RK3588 hardware MJPEG decode pipeline to NV12 output (no jpegparse)."""
-    return (
-        f"v4l2src device={device} io-mode=2 ! "
-        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "mppjpegdec ! videoconvert n-threads=2 ! video/x-raw,format=NV12 ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    )
-
-
-def _build_usb_gstreamer_sw_nv12_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Build software MJPEG decode pipeline to NV12 output."""
-    return (
-        f"v4l2src device={device} io-mode=2 ! "
-        f"image/jpeg,width={width},height={height},framerate={fps}/1 ! "
-        "jpegdec ! videoconvert n-threads=2 ! video/x-raw,format=NV12 ! "
-        "appsink drop=true max-buffers=1 sync=false"
-    )
-
-
-def build_usb_gstreamer_pipeline_candidates(
-    device: str,
-    width: int,
-    height: int,
-    fps: int,
-    decode_mode: str = "auto",
-    output_mode: str = "auto",
-) -> list[str]:
-    """Build candidate pipelines for RK3588 USB camera capture.
-
-    decode_mode:
-        auto: prefer Rockchip hardware decode, fallback to software decode.
-        hw:   force Rockchip hardware decode candidates only.
-        sw:   force software decode path.
-    output_mode:
-        auto: prefer NV12 path first, fallback to BGR.
-        nv12: force NV12 outputs only.
-        bgr:  force BGR outputs only.
-    """
-    mode = str(decode_mode).strip().lower()
-    out_mode = str(output_mode).strip().lower()
-
-    sw_bgr = _build_usb_gstreamer_sw_pipeline(device, width, height, fps)
-    hw_bgr_primary = _build_usb_gstreamer_hw_pipeline(device, width, height, fps)
-    hw_nv12_primary = _build_usb_gstreamer_hw_nv12_pipeline(device, width, height, fps)
-    sw_nv12 = _build_usb_gstreamer_sw_nv12_pipeline(device, width, height, fps)
-
-
-    if mode == "auto":
-        decode_nv12 = [hw_nv12_primary, sw_nv12]
-        decode_bgr = [hw_bgr_primary, sw_bgr]
-    elif mode == "hw":
-        decode_nv12 = [hw_nv12_primary]
-        decode_bgr = [hw_bgr_primary]
-    elif mode == "sw":
-        decode_nv12 = [sw_nv12]
-        decode_bgr = [sw_bgr]
-    else:
-        raise ValueError("gstreamer_decode must be one of: auto, hw, sw")
-
-    if out_mode == "auto":
-        return decode_nv12 + decode_bgr
-    if out_mode == "nv12":
-        return decode_nv12
-    if out_mode == "bgr":
-        return decode_bgr
-    raise ValueError("gstreamer_output must be one of: auto, nv12, bgr")
-
-
-def build_usb_gstreamer_pipeline(device: str, width: int, height: int, fps: int) -> str:
-    """Backward-compatible single pipeline builder.
-
-    Returns the preferred auto-mode candidate.
-    """
-    return build_usb_gstreamer_pipeline_candidates(
-        device,
-        width,
-        height,
-        fps,
-        decode_mode="auto",
-        output_mode="auto",
-    )[0]
-
-
 class StereoCamera:
     """Capture combined stereo frame and split into left/right images.
 
@@ -165,77 +70,6 @@ class StereoCamera:
         if len(compact) <= max_len:
             return compact
         return compact[: max_len - 3] + "..."
-
-    def _convert_gstreamer_frame_if_needed(self, frame: np.ndarray) -> np.ndarray:
-        """Convert NV12 appsink frames to BGR when OpenCV does not auto-convert."""
-        if not self.cfg.use_gstreamer:
-            return frame
-        if not self._gst_selected_pipeline or "format=NV12" not in self._gst_selected_pipeline:
-            return frame
-        # Some OpenCV builds already return BGR even if appsink requested NV12.
-        if frame.ndim == 3 and frame.shape[2] == 3:
-            return frame
-
-        in_frame = frame
-        if in_frame.ndim == 3 and in_frame.shape[2] == 1:
-            in_frame = in_frame[:, :, 0]
-
-        if in_frame.ndim != 2:
-            raise RuntimeError(
-                "Unexpected NV12 frame layout from GStreamer appsink: "
-                f"shape={frame.shape}. Try --gst-output bgr"
-            )
-
-        h2, _ = in_frame.shape[:2]
-        if h2 % 3 != 0:
-            raise RuntimeError(
-                "Unexpected NV12 frame height from GStreamer appsink: "
-                f"shape={frame.shape}. Try --gst-output bgr"
-            )
-
-        return cv2.cvtColor(in_frame, cv2.COLOR_YUV2BGR_NV12)
-
-    def _split_nv12_stereo_to_gray(self, frame: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Split side-by-side NV12 frame into left/right grayscale images.
-
-        For NV12, the first H rows are the Y plane, which is already grayscale.
-        Using Y directly avoids per-frame full BGR conversion.
-        """
-        in_frame = frame
-        if in_frame.ndim == 3 and in_frame.shape[2] == 1:
-            in_frame = in_frame[:, :, 0]
-
-        # Some OpenCV/GStreamer combinations may still return BGR.
-        if in_frame.ndim == 3 and in_frame.shape[2] == 3:
-            bgr_h, bgr_w = in_frame.shape[:2]
-            if bgr_w % 2 != 0:
-                raise ValueError(f"Expected combined frame width to be even, got {bgr_w}")
-            half = bgr_w // 2
-            left_gray = cv2.cvtColor(in_frame[:, :half], cv2.COLOR_BGR2GRAY)
-            right_gray = cv2.cvtColor(in_frame[:, half:], cv2.COLOR_BGR2GRAY)
-            return left_gray, right_gray
-
-        if in_frame.ndim != 2:
-            raise RuntimeError(
-                "Unexpected NV12 frame layout from GStreamer appsink: "
-                f"shape={frame.shape}. Try --gst-output bgr"
-            )
-
-        h3_2, w = in_frame.shape[:2]
-        if h3_2 % 3 != 0:
-            raise RuntimeError(
-                "Unexpected NV12 frame height from GStreamer appsink: "
-                f"shape={frame.shape}. Try --gst-output bgr"
-            )
-        if w % 2 != 0:
-            raise ValueError(f"Expected combined frame width to be even, got {w}")
-
-        h = (h3_2 * 2) // 3
-        y_plane = in_frame[:h, :]
-        half = w // 2
-        left_gray = y_plane[:, :half]
-        right_gray = y_plane[:, half:]
-        return left_gray, right_gray
 
     def _open_gstreamer_single_pipeline(self) -> None:
         """Open one GStreamer pipeline (single appsink) with candidate fallback."""
@@ -363,10 +197,14 @@ class StereoCamera:
             raise RuntimeError("Failed to read camera frame")
 
         if self.cfg.use_gstreamer and self._gst_selected_pipeline and "format=NV12" in self._gst_selected_pipeline:
-            left, right = self._split_nv12_stereo_to_gray(frame)
+            left, right = split_nv12_stereo_to_gray(frame)
             w = left.shape[1] + right.shape[1]
         else:
-            frame = self._convert_gstreamer_frame_if_needed(frame)
+            frame = convert_gstreamer_frame_if_needed(
+                frame,
+                use_gstreamer=self.cfg.use_gstreamer,
+                selected_pipeline=self._gst_selected_pipeline,
+            )
             # Height is kept for readability and potential future validation hooks.
             h, w = frame.shape[:2]
             if w % 2 != 0:

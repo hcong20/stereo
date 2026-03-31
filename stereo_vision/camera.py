@@ -6,7 +6,8 @@ smaller focused modules.
 
 from stereo_vision.camera_buffered import BufferedStereoCamera
 from stereo_vision.camera_multi import MultiStereoCamera
-from stereo_vision.camera_single import CameraConfig, StereoCamera, build_usb_gstreamer_pipeline
+from stereo_vision.camera_single import CameraConfig, StereoCamera
+from stereo_vision.gstreamer_pipelines import build_usb_gstreamer_pipeline
 
 __all__ = [
     "CameraConfig",
