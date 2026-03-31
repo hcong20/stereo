@@ -7,7 +7,6 @@ and live OpenCV visualization.
 """
 
 import time
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -23,7 +22,6 @@ from stereo_vision.app_cli import (
     safe_num_disparities_for_roi,
 )
 from stereo_vision.calibration import load_stereo_calibration
-from stereo_vision.camera import MultiStereoCamera
 from stereo_vision.depth import DepthConfig, DepthEstimator
 from stereo_vision.disparity import SGBMConfig, StereoDisparityEstimator
 from stereo_vision.filters import DistanceFilter, TemporalFilterConfig
@@ -31,8 +29,18 @@ from stereo_vision.optimization import RuntimeOptimizationConfig, crop_for_dispa
 from stereo_vision.preprocess import FramePreprocessor, PreprocessConfig
 from stereo_vision.rectification import build_rectification_maps, rectify_pair
 from stereo_vision.roi import ROI, robust_roi_distance
+from stereo_vision.runtime_profile import StageProfiler
+from stereo_vision.runtime_switching import (
+    configure_switch_runtime_state,
+    finalize_pending_switch,
+    read_active_frame,
+    recover_frame_after_read_error,
+    request_switch,
+    update_switch_breakdown_snapshot,
+)
+from stereo_vision.runtime_visualization import apply_click_probe_overlay, build_viz_layers
 from stereo_vision.startup import initialize_capture
-from stereo_vision.visualization import VizState, colorize_disparity, draw_roi, draw_text, register_click
+from stereo_vision.visualization import VizState, register_click
 
 
 def _quiet_opencv_logs() -> None:
@@ -205,136 +213,45 @@ def main() -> None:
     perf = PerfStats()
     window_sized = False
     screen_size = get_screen_size()
-    profile_stages = bool(getattr(args, "profile_stages", False))
-    profile_interval = max(1, int(getattr(args, "profile_interval", 60)))
-    stage_acc = {
-        "capture": 0.0,
-        "rectify": 0.0,
-        "preprocess": 0.0,
-        "disparity": 0.0,
-        "depth": 0.0,
-        "viz": 0.0,
-        "total": 0.0,
-    }
-    stage_count = 0
-    last_switch_latency_ms: Optional[float] = None
-    last_switch_breakdown: Optional[dict] = None
-    switch_pending: Optional[dict] = None
-    last_good_frame: Optional[tuple[np.ndarray, np.ndarray, float, int]] = None
-    switch_runtime_timeout_s = switch_timeout_s
-    if multi_mode and isinstance(cam, MultiStereoCamera) and cam.single_active_mode and switch_runtime_timeout_s < 3.0:
-        print(
-            "[WARN] Single-active mode detected with slow camera restart characteristics; "
-            f"raising runtime switch timeout from {switch_runtime_timeout_s:.2f}s to 3.00s"
-        )
-        switch_runtime_timeout_s = 3.0
-
-    read_timeout_idle_s = min(0.05, switch_runtime_timeout_s)
-    read_timeout_switch_s = min(0.20, switch_runtime_timeout_s)
-    fallback_max_age_s = max(0.12, min(0.4, switch_runtime_timeout_s))
-
-    def read_active_frame() -> tuple[np.ndarray, np.ndarray, float, int]:
-        """Read current active source frame and return source index for overlays."""
-        if multi_mode:
-            min_ts = 0.0
-            timeout = read_timeout_idle_s
-            allow_fallback = True
-            if switch_pending is not None:
-                pending_t0 = float(switch_pending["t0"])
-                min_ts = pending_t0
-                timeout = read_timeout_switch_s
-                # During a pending switch, wait for target fresh frame only.
-                allow_fallback = False
-            l, r, ts, _, idx = cam.read(
-                timeout_s=timeout,
-                min_timestamp_s=min_ts,
-                allow_fallback=allow_fallback,
-                max_fallback_age_s=fallback_max_age_s,
-            )
-            return l, r, ts, idx
-        l, r, ts = cam.read()
-        return l, r, ts, 0
+    profiler = StageProfiler(
+        enabled=bool(getattr(args, "profile_stages", False)),
+        interval=max(1, int(getattr(args, "profile_interval", 60))),
+    )
+    switch_state = configure_switch_runtime_state(
+        multi_mode=multi_mode,
+        cam=cam,
+        switch_timeout_s=switch_timeout_s,
+    )
 
     try:
         while True:
             t0 = time.perf_counter()
             # 1) Capture and optional channel swap.
             try:
-                left, right, frame_ts, active_idx = read_active_frame()
-                last_good_frame = (left, right, frame_ts, active_idx)
-                if multi_mode and isinstance(cam, MultiStereoCamera):
-                    breakdown = cam.get_last_switch_breakdown()
-                    if breakdown is not None:
-                        last_switch_breakdown = breakdown
+                left, right, frame_ts, active_idx = read_active_frame(
+                    cam=cam,
+                    multi_mode=multi_mode,
+                    state=switch_state,
+                )
+                switch_state.last_good_frame = (left, right, frame_ts, active_idx)
+                update_switch_breakdown_snapshot(multi_mode, cam, switch_state)
             except RuntimeError:
-                now = time.perf_counter()
-
-                if switch_pending is not None:
-                    pending_idx = int(switch_pending["to_idx"])
-                    pending_t0 = float(switch_pending["t0"])
-                    if (now - pending_t0) >= switch_runtime_timeout_s:
-                        statuses = cam.source_statuses()
-                        target = statuses[pending_idx]
-                        age_text = "N/A" if target["frame_age_ms"] is None else f"{target['frame_age_ms']:.0f}ms"
-                        err_text = target["last_error"] if target["last_error"] else "-"
-                        print(
-                            "[WARN] Switch timed out: "
-                            f"requested_input={pending_idx + 1}, fallback_input=unchanged, "
-                            f"target_has_frame={target['has_frame']}, target_age={age_text}, "
-                            f"target_running={target['running']}, target_thread={target['thread_alive']}, "
-                            f"target_err={err_text}"
-                        )
-                        switch_pending = None
-
-                if last_good_frame is None:
+                recovered = recover_frame_after_read_error(
+                    cam=cam,
+                    state=switch_state,
+                )
+                if recovered is None:
                     time.sleep(0.01)
                     continue
-                left, right, frame_ts, active_idx = last_good_frame
+                left, right, frame_ts, active_idx = recovered
             t_capture = time.perf_counter()
-
-            if switch_pending is not None:
-                pending_idx = int(switch_pending["to_idx"])
-                pending_from_idx = int(switch_pending["from_idx"])
-                pending_t0 = float(switch_pending["t0"])
-                if pending_idx == active_idx and frame_ts >= pending_t0:
-                    last_switch_latency_ms = (time.perf_counter() - pending_t0) * 1000.0
-                    if multi_mode and isinstance(cam, MultiStereoCamera):
-                        breakdown = cam.get_last_switch_breakdown()
-                        if breakdown is not None:
-                            last_switch_breakdown = breakdown
-                    if last_switch_breakdown is not None:
-                        print(
-                            "[INFO] Switch complete: "
-                            f"from_input={pending_from_idx + 1}, to_input={active_idx + 1}, "
-                            f"latency={last_switch_latency_ms:.1f}ms, "
-                            f"seg_stop={float(last_switch_breakdown.get('stop_ms', 0.0)):.0f}ms, "
-                            f"seg_open={float(last_switch_breakdown.get('open_ms', 0.0)):.0f}ms, "
-                            f"seg_frame={float(last_switch_breakdown.get('first_frame_ms', 0.0)):.0f}ms, "
-                            f"seg_total={float(last_switch_breakdown.get('total_ms', 0.0)):.0f}ms"
-                        )
-                    else:
-                        print(
-                            "[INFO] Switch complete: "
-                            f"from_input={pending_from_idx + 1}, to_input={active_idx + 1}, "
-                            f"latency={last_switch_latency_ms:.1f}ms"
-                        )
-                    switch_pending = None
-                elif (time.perf_counter() - pending_t0) >= switch_runtime_timeout_s:
-                    # Target source did not deliver a fresh frame in time.
-                    # Keep showing available stream and clear pending state.
-                    cam.switch_to(active_idx)
-                    statuses = cam.source_statuses()
-                    target = statuses[pending_idx]
-                    age_text = "N/A" if target["frame_age_ms"] is None else f"{target['frame_age_ms']:.0f}ms"
-                    err_text = target["last_error"] if target["last_error"] else "-"
-                    print(
-                        "[WARN] Switch timed out: "
-                        f"requested_input={pending_idx + 1}, fallback_input={active_idx + 1}, "
-                        f"target_has_frame={target['has_frame']}, target_age={age_text}, "
-                        f"target_running={target['running']}, target_thread={target['thread_alive']}, "
-                        f"target_err={err_text}"
-                    )
-                    switch_pending = None
+            finalize_pending_switch(
+                cam=cam,
+                multi_mode=multi_mode,
+                state=switch_state,
+                active_idx=active_idx,
+                frame_ts=frame_ts,
+            )
             if swap_lr:
                 left, right = right, left
 
@@ -425,99 +342,38 @@ def main() -> None:
             latency_ms = (time.perf_counter() - t0) * 1000.0
 
             # 7) Build visualization layers and on-screen diagnostics.
-            disp_vis = colorize_disparity(
-                disparity,
+            left_viz, disp_vis = build_viz_layers(
+                left_rect=left_rect,
+                disparity=disparity,
+                roi_scaled=roi_scaled,
                 min_disp=float(args.min_disp),
                 max_disp=float(args.min_disp + effective_num_disp),
+                distance_filtered=distance_filtered,
+                fps=fps,
+                latency_ms=latency_ms,
+                active_idx=active_idx,
+                device_list=device_list,
+                last_switch_latency_ms=switch_state.last_switch_latency_ms,
+                switch_pending=switch_state.pending,
+                last_switch_breakdown=switch_state.last_switch_breakdown,
+                valid_pixels=valid_pixels,
+                total_pixels=total_pixels,
+                positive_disp_pixels=positive_disp_pixels,
+                clipped_by_max_depth=clipped_by_max_depth,
+                distance_raw=distance_raw,
             )
-            left_viz_src = left_rect
-            if left_viz_src.ndim == 2 or (left_viz_src.ndim == 3 and left_viz_src.shape[2] == 1):
-                left_viz_src = cv2.cvtColor(left_viz_src, cv2.COLOR_GRAY2BGR)
-            left_viz = draw_roi(left_viz_src, roi_scaled)
-
-            if distance_filtered is not None:
-                left_viz = draw_text(left_viz, f"ROI Distance: {distance_filtered * 1000.0:.1f} mm", (10, 30), (0, 255, 0))
-            else:
-                left_viz = draw_text(left_viz, "ROI Distance: N/A", (10, 30), (0, 0, 255))
-
-            left_viz = draw_text(left_viz, f"FPS: {fps:.1f}", (10, 60), (255, 255, 0))
-            left_viz = draw_text(left_viz, f"Latency: {latency_ms:.1f} ms", (10, 90), (255, 255, 0))
-            left_viz = draw_text(
-                left_viz,
-                f"Input: {active_idx + 1}/{len(device_list)} ({device_list[active_idx]})",
-                (10, 120),
-                (255, 255, 0),
-            )
-            if last_switch_latency_ms is not None:
-                left_viz = draw_text(
-                    left_viz,
-                    f"Switch latency: {last_switch_latency_ms:.1f} ms",
-                    (10, 150),
-                    (200, 255, 200),
-                )
-            elif switch_pending is not None:
-                pending_idx = int(switch_pending["to_idx"])
-                pending_t0 = float(switch_pending["t0"])
-                pending_ms = (time.perf_counter() - pending_t0) * 1000.0
-                left_viz = draw_text(
-                    left_viz,
-                    f"Switching to input {pending_idx + 1}: {pending_ms:.0f} ms",
-                    (10, 150),
-                    (0, 215, 255),
-                )
-            else:
-                left_viz = draw_text(
-                    left_viz,
-                    "Switch latency: N/A",
-                    (10, 150),
-                    (255, 255, 0),
-                )
-            if last_switch_breakdown is not None:
-                stop_ms = float(last_switch_breakdown.get("stop_ms", 0.0))
-                open_ms = float(last_switch_breakdown.get("open_ms", 0.0))
-                frame_ms = float(last_switch_breakdown.get("first_frame_ms", 0.0))
-                total_ms = float(last_switch_breakdown.get("total_ms", 0.0))
-                left_viz = draw_text(
-                    left_viz,
-                    f"Sw seg(ms) stop/open/frame={stop_ms:.0f}/{open_ms:.0f}/{frame_ms:.0f} total={total_ms:.0f}",
-                    (10, 330),
-                    (200, 255, 200),
-                )
-            left_viz = draw_text(
-                left_viz,
-                f"ROI valid: {valid_pixels}/{total_pixels}",
-                (10, 180),
-                (255, 255, 0),
-            )
-            left_viz = draw_text(
-                left_viz,
-                f"ROI disp>0: {positive_disp_pixels}/{total_pixels}",
-                (10, 210),
-                (255, 255, 0),
-            )
-            left_viz = draw_text(
-                left_viz,
-                f"ROI clipped(maxD): {clipped_by_max_depth}",
-                (10, 240),
-                (255, 255, 0),
-            )
-
-            if distance_raw is not None:
-                left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 270), (200, 255, 200))
-            else:
-                left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 270), (0, 0, 255))
             t_depth = time.perf_counter()
 
             # Optional per-pixel inspection from last mouse click.
-            if viz_state.clicked_px is not None:
-                cx, cy = viz_state.clicked_px
-                if 0 <= cx < left_viz.shape[1] and 0 <= cy < left_viz.shape[0]:
-                    cv2.circle(left_viz, (cx, cy), 5, (0, 0, 255), -1, cv2.LINE_AA)
-                click_depth: Optional[float] = depth_estimator.depth_at(depth_map, cx, cy)
-                if click_depth is not None:
-                    left_viz = draw_text(left_viz, f"Click({cx},{cy}): {click_depth * 1000.0:.1f} mm", (10, 300), (255, 200, 0))
-                else:
-                    left_viz = draw_text(left_viz, f"Click({cx},{cy}): N/A", (10, 300), (0, 0, 255))
+            click_px = viz_state.clicked_px
+            click_depth = None
+            if click_px is not None:
+                click_depth = depth_estimator.depth_at(depth_map, click_px[0], click_px[1])
+            left_viz = apply_click_probe_overlay(
+                left_viz,
+                click_px=click_px,
+                click_depth=click_depth,
+            )
 
             stack = np.hstack([left_viz, disp_vis])
             if not window_sized:
@@ -532,28 +388,17 @@ def main() -> None:
             cv2.imshow(win, stack)
             t_viz = time.perf_counter()
 
-            if profile_stages:
-                stage_acc["capture"] += (t_capture - t0) * 1000.0
-                stage_acc["rectify"] += (t_rectify - t_capture) * 1000.0
-                stage_acc["preprocess"] += (t_preprocess - t_rectify) * 1000.0
-                stage_acc["disparity"] += (t_disparity - t_preprocess) * 1000.0
-                stage_acc["depth"] += (t_depth - t_disparity) * 1000.0
-                stage_acc["viz"] += (t_viz - t_depth) * 1000.0
-                stage_acc["total"] += (t_viz - t0) * 1000.0
-                stage_count += 1
-                if stage_count >= profile_interval:
-                    print(
-                        "[PROFILE] avg_ms "
-                        f"capture={stage_acc['capture'] / stage_count:.2f} "
-                        f"rectify={stage_acc['rectify'] / stage_count:.2f} "
-                        f"preprocess={stage_acc['preprocess'] / stage_count:.2f} "
-                        f"disparity={stage_acc['disparity'] / stage_count:.2f} "
-                        f"depth={stage_acc['depth'] / stage_count:.2f} "
-                        f"viz={stage_acc['viz'] / stage_count:.2f} "
-                        f"total={stage_acc['total'] / stage_count:.2f}"
-                    )
-                    stage_acc = {k: 0.0 for k in stage_acc}
-                    stage_count = 0
+            profile_line = profiler.record(
+                t0=t0,
+                t_capture=t_capture,
+                t_rectify=t_rectify,
+                t_preprocess=t_preprocess,
+                t_disparity=t_disparity,
+                t_depth=t_depth,
+                t_viz=t_viz,
+            )
+            if profile_line is not None:
+                print(profile_line)
 
             # Keyboard shortcuts: s toggles left/right swap, 1-9 switches input, n selects next input, q/esc exits.
             key_raw = cv2.waitKeyEx(1)
@@ -565,30 +410,20 @@ def main() -> None:
                 req_idx = decode_switch_index(key_raw, len(device_list))
                 if req_idx is not None:
                     if req_idx != active_idx:
-                        active_applied = cam.switch_to(req_idx)
-                        t_sw = time.perf_counter()
-                        switch_pending = {
-                            "from_idx": int(active_idx),
-                            "to_idx": int(active_applied),
-                            "t0": float(t_sw),
-                        }
-                        print(
-                            "[INFO] Switch request: "
-                            f"from_input={active_idx + 1}, to_input={active_applied + 1}, key=number"
+                        switch_state.pending = request_switch(
+                            cam=cam,
+                            from_idx=active_idx,
+                            to_idx=req_idx,
+                            key_label="number",
                         )
 
             if multi_mode and key == ord("n"):
                 next_idx = (active_idx + 1) % len(device_list)
-                active_applied = cam.switch_to(next_idx)
-                t_sw = time.perf_counter()
-                switch_pending = {
-                    "from_idx": int(active_idx),
-                    "to_idx": int(active_applied),
-                    "t0": float(t_sw),
-                }
-                print(
-                    "[INFO] Switch request: "
-                    f"from_input={active_idx + 1}, to_input={active_applied + 1}, key=next"
+                switch_state.pending = request_switch(
+                    cam=cam,
+                    from_idx=active_idx,
+                    to_idx=next_idx,
+                    key_label="next",
                 )
             if key == 27 or key == ord("q"):
                 break
