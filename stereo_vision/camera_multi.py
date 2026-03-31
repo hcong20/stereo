@@ -7,6 +7,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from stereo_vision.camera_buffered import BufferedStereoCamera
+from stereo_vision.camera_multi_helpers import (
+    aligned_live_indices,
+    build_group_maps,
+    build_pending_switch_payload,
+    clamp_index,
+    finalize_switch_breakdown,
+    normalize_group_ids,
+    pick_freshest_fallback,
+)
 from stereo_vision.camera_single import CameraConfig
 
 
@@ -30,22 +39,12 @@ class MultiStereoCamera:
             )
             for idx, cfg in enumerate(configs)
         ]
-        self._active_idx = max(0, min(int(initial_active_index), len(self.sources) - 1))
+        source_count = len(self.sources)
+        self._active_idx = clamp_index(initial_active_index, source_count)
         self._active_lock = threading.Lock()
         self.single_active_mode = bool(single_active_mode)
-        if group_ids is not None and len(group_ids) != len(self.sources):
-            raise ValueError("group_ids length must match number of sources")
-        if group_ids is None:
-            self.group_ids: List[str] = [str(i) for i in range(len(self.sources))]
-        else:
-            self.group_ids = [str(g) for g in group_ids]
-        self._group_to_indices: Dict[str, List[int]] = {}
-        self._index_slot: Dict[int, int] = {}
-        for src_idx, group in enumerate(self.group_ids):
-            self._group_to_indices.setdefault(group, []).append(src_idx)
-        for group, indices in self._group_to_indices.items():
-            for slot, src_idx in enumerate(indices):
-                self._index_slot[src_idx] = slot
+        self.group_ids = normalize_group_ids(group_ids, source_count)
+        self._group_to_indices, self._index_slot = build_group_maps(self.group_ids)
         self.group_live_mode = bool(self.single_active_mode and keep_one_live_per_group and group_ids is not None)
         self._group_live_index: Dict[str, int] = {}
         self._switch_lock = threading.Lock()
@@ -53,7 +52,7 @@ class MultiStereoCamera:
         self._last_switch_breakdown: Optional[dict] = None
 
     def _group_of(self, index: int) -> str:
-        idx = max(0, min(int(index), len(self.sources) - 1))
+        idx = clamp_index(index, len(self.sources))
         return self.group_ids[idx]
 
     def _aligned_live_indices(self, reference_index: int) -> Dict[str, int]:
@@ -63,13 +62,12 @@ class MultiStereoCamera:
             slot 0 -> (1,3)
             slot 1 -> (2,4)
         """
-        ref_idx = max(0, min(int(reference_index), len(self.sources) - 1))
-        ref_slot = self._index_slot.get(ref_idx, 0)
-        out: Dict[str, int] = {}
-        for group, indices in self._group_to_indices.items():
-            slot = ref_slot if ref_slot < len(indices) else len(indices) - 1
-            out[group] = indices[slot]
-        return out
+        return aligned_live_indices(
+            group_to_indices=self._group_to_indices,
+            index_slot=self._index_slot,
+            reference_index=reference_index,
+            source_count=len(self.sources),
+        )
 
     @property
     def source_count(self) -> int:
@@ -98,7 +96,7 @@ class MultiStereoCamera:
 
     def switch_to(self, index: int) -> int:
         """Switch active source by index and return applied index."""
-        idx = max(0, min(int(index), len(self.sources) - 1))
+        idx = clamp_index(index, len(self.sources))
         old_idx = self.active_index()
         t_switch = time.perf_counter()
         stop_ms = 0.0
@@ -157,15 +155,15 @@ class MultiStereoCamera:
 
         if idx != old_idx:
             with self._switch_lock:
-                self._pending_switch = {
-                    "request_ts": t_switch,
-                    "from_idx": old_idx,
-                    "to_idx": idx,
-                    "stop_ms": stop_ms,
-                    "start_call_ms": start_call_ms,
-                    "target_prev_frame_id": target_prev_frame_id,
-                    "target_open_count_before": target_open_count_before,
-                }
+                self._pending_switch = build_pending_switch_payload(
+                    request_ts=t_switch,
+                    from_idx=old_idx,
+                    to_idx=idx,
+                    stop_ms=stop_ms,
+                    start_call_ms=start_call_ms,
+                    target_prev_frame_id=target_prev_frame_id,
+                    target_open_count_before=target_open_count_before,
+                )
 
         return idx
 
@@ -221,31 +219,20 @@ class MultiStereoCamera:
                 return
             if int(pending["to_idx"]) != int(source_idx):
                 return
-
-            request_ts = float(pending["request_ts"])
-            prev_id = int(pending["target_prev_frame_id"])
-            if frame_ts < request_ts or int(frame_id) <= prev_id:
-                return
-
             open_ms, _, open_count = self.sources[source_idx].get_open_stats()
-            open_count_before = int(pending["target_open_count_before"])
-            if open_count <= open_count_before:
-                open_ms = 0.0
-
-            total_ms = (time.perf_counter() - request_ts) * 1000.0
-            stop_ms = float(pending["stop_ms"])
-            first_frame_ms = max(0.0, total_ms - stop_ms - float(open_ms))
-
-            self._last_switch_breakdown = {
-                "from_idx": int(pending["from_idx"]),
-                "to_idx": int(pending["to_idx"]),
-                "total_ms": total_ms,
-                "stop_ms": stop_ms,
-                "open_ms": float(open_ms),
-                "first_frame_ms": first_frame_ms,
-                "start_call_ms": float(pending["start_call_ms"]),
-            }
-            self._pending_switch = None
+            pending_next, breakdown = finalize_switch_breakdown(
+                pending=pending,
+                source_idx=source_idx,
+                frame_ts=frame_ts,
+                frame_id=frame_id,
+                open_ms=open_ms,
+                open_count=open_count,
+                now_ts=time.perf_counter(),
+            )
+            if breakdown is None:
+                return
+            self._last_switch_breakdown = breakdown
+            self._pending_switch = pending_next
 
     def read(
         self,
@@ -276,18 +263,13 @@ class MultiStereoCamera:
         if allow_fallback:
             # Keep pipeline responsive: return freshest frame from any source,
             # but do not overwrite the active selection.
-            freshest: Optional[Tuple[int, Tuple[np.ndarray, np.ndarray, float, int]]] = None
             now = time.perf_counter()
-            max_age = max(0.0, float(max_fallback_age_s))
-            for fallback_idx, src in enumerate(self.sources):
-                fallback = src.get_latest()
-                if fallback is None:
-                    continue
-                frame_age = now - float(fallback[2])
-                if frame_age > max_age:
-                    continue
-                if freshest is None or fallback[2] > freshest[1][2]:
-                    freshest = (fallback_idx, fallback)
+            latest_frames = [src.get_latest() for src in self.sources]
+            freshest = pick_freshest_fallback(
+                latest_frames_by_index=latest_frames,
+                now_ts=now,
+                max_fallback_age_s=max_fallback_age_s,
+            )
             if freshest is not None:
                 fallback_idx, fallback = freshest
                 left, right, ts, frame_id = fallback
