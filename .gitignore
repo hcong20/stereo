@@ -24,6 +24,7 @@ outputs/
 frames/
 
 # Local calibration and test data
+stereo_calib_params_*.npz
 stereo_calib_params.npz
 calib_*.npz
 
