@@ -16,6 +16,7 @@ from stereo_vision.app_cli import (
     decode_switch_index,
     fourcc_to_str,
     get_screen_size,
+    parse_physical_size_mm,
     parse_args,
     parse_roi,
     resolve_baseline_m,
@@ -28,7 +29,7 @@ from stereo_vision.filters import DistanceFilter, TemporalFilterConfig
 from stereo_vision.optimization import RuntimeOptimizationConfig, crop_for_disparity
 from stereo_vision.preprocess import FramePreprocessor, PreprocessConfig
 from stereo_vision.rectification import build_rectification_maps, rectify_pair
-from stereo_vision.roi import ROI, robust_roi_distance
+from stereo_vision.roi import ROI, robust_roi_distance, roi_from_physical_size
 from stereo_vision.runtime_profile import StageProfiler
 from stereo_vision.runtime_switching import (
     configure_switch_runtime_state,
@@ -127,16 +128,42 @@ def main() -> None:
     baseline_m = resolve_baseline_m(baseline_raw, str(args.baseline_unit))
     print(f"[INFO] baseline_raw={baseline_raw:.6f}, baseline_m={baseline_m:.6f}, unit={args.baseline_unit}")
 
-    # Keep both original ROI (CLI scale) and scaled ROI (runtime scale).
+    # Keep a static ROI for compatibility and optional center reference.
     roi = parse_roi(args.roi)
+    roi_phys_w_m, roi_phys_h_m = parse_physical_size_mm(str(args.roi_physical_size_mm))
+    roi_center_mode = str(args.roi_physical_center)
+    roi_depth_ref_m = 1.0
+    print(
+        "[INFO] Physical ROI enabled: "
+        f"{roi_phys_w_m * 100.0:.1f}cm x {roi_phys_h_m * 100.0:.1f}cm, center={roi_center_mode}"
+    )
+
     scaled_w = max(1, int(left0.shape[1] * scale))
     scaled_h = max(1, int(left0.shape[0] * scale))
-    roi_scaled_init = ROI(
+    roi_scaled_static = ROI(
         x=int(roi.x * scale),
         y=int(roi.y * scale),
         w=int(roi.w * scale),
         h=int(roi.h * scale),
     ).clamp(scaled_w, scaled_h)
+
+    if roi_center_mode == "image-center":
+        init_cx = scaled_w // 2
+        init_cy = scaled_h // 2
+    else:
+        init_cx = roi_scaled_static.x + (roi_scaled_static.w // 2)
+        init_cy = roi_scaled_static.y + (roi_scaled_static.h // 2)
+
+    roi_scaled_init = roi_from_physical_size(
+        img_w=scaled_w,
+        img_h=scaled_h,
+        center_x=init_cx,
+        center_y=init_cy,
+        width_m=roi_phys_w_m,
+        height_m=roi_phys_h_m,
+        depth_m=roi_depth_ref_m,
+        fx=focal_px,
+    )
 
     requested_num_disp = int(args.num_disp)
     effective_num_disp = requested_num_disp
@@ -272,12 +299,40 @@ def main() -> None:
             left_rect, right_rect, gray_l, gray_r = preprocessor.process(left_rect, right_rect)
             t_preprocess = time.perf_counter()
 
-            roi_scaled = ROI(
+            roi_scaled_static = ROI(
                 x=int(roi.x * runtime_cfg.scale),
                 y=int(roi.y * runtime_cfg.scale),
                 w=int(roi.w * runtime_cfg.scale),
                 h=int(roi.h * runtime_cfg.scale),
             ).clamp(gray_l.shape[1], gray_l.shape[0])
+
+            if roi_center_mode == "image-center":
+                center_x = gray_l.shape[1] // 2
+                center_y = gray_l.shape[0] // 2
+            else:
+                center_x = roi_scaled_static.x + (roi_scaled_static.w // 2)
+                center_y = roi_scaled_static.y + (roi_scaled_static.h // 2)
+
+            roi_scaled = roi_from_physical_size(
+                img_w=gray_l.shape[1],
+                img_h=gray_l.shape[0],
+                center_x=center_x,
+                center_y=center_y,
+                width_m=roi_phys_w_m,
+                height_m=roi_phys_h_m,
+                depth_m=roi_depth_ref_m,
+                fx=focal_px,
+            )
+
+            if runtime_cfg.disparity_roi_only and roi_scaled.w < 32:
+                # Keep SGBM ROI mode valid even when physical projection gets too narrow.
+                expand = 32 - roi_scaled.w
+                roi_scaled = ROI(
+                    x=roi_scaled.x - (expand // 2),
+                    y=roi_scaled.y,
+                    w=32,
+                    h=roi_scaled.h,
+                ).clamp(gray_l.shape[1], gray_l.shape[0])
 
             # 4) Disparity either on full frame or constrained ROI.
             if not runtime_cfg.disparity_roi_only:
@@ -304,13 +359,28 @@ def main() -> None:
                     )
 
             if runtime_cfg.disparity_roi_only:
+                target_num_disp = safe_num_disparities_for_roi(requested_num_disp, roi_scaled.w)
+                if target_num_disp != active_num_disp:
+                    active_num_disp = target_num_disp
+                    disp_estimator = StereoDisparityEstimator(
+                        SGBMConfig(
+                            min_disparity=int(args.min_disp),
+                            num_disparities=active_num_disp,
+                            block_size=int(args.block_size),
+                            p1=8 * 1 * int(args.block_size) * int(args.block_size),
+                            p2=32 * 1 * int(args.block_size) * int(args.block_size),
+                            uniqueness_ratio=10,
+                            speckle_window_size=80,
+                            speckle_range=2,
+                        )
+                    )
                 crop_l, crop_r, roi_used = crop_for_disparity(gray_l, gray_r, roi_scaled)
                 try:
                     disp_crop = disp_estimator.compute(crop_l, crop_r)
                 except cv2.error as exc:
                     raise RuntimeError(
                         "StereoSGBM failed in ROI mode. Increase ROI width or lower --num-disp. "
-                        f"Current ROI width={roi_used.w}, effective num-disp={effective_num_disp}."
+                        f"Current ROI width={roi_used.w}, effective num-disp={active_num_disp}."
                     ) from exc
                 # Keep full-frame shape so downstream ROI/depth code stays identical.
                 disparity = np.full(gray_l.shape, -1.0, dtype=np.float32)
@@ -346,6 +416,10 @@ def main() -> None:
                 min_valid_pixels=max(1, int(args.min_valid_pixels)),
             )
             distance_filtered = distance_filter.update(distance_raw)
+            if distance_filtered is not None and np.isfinite(distance_filtered) and distance_filtered > 0:
+                roi_depth_ref_m = float(distance_filtered)
+            elif distance_raw is not None and np.isfinite(distance_raw) and distance_raw > 0:
+                roi_depth_ref_m = float(distance_raw)
 
             fps = perf.update_fps()
             latency_ms = (time.perf_counter() - t0) * 1000.0

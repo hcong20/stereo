@@ -71,3 +71,24 @@ def robust_roi_distance(depth_map: np.ndarray, roi: ROI, min_valid_pixels: int =
         return float(np.median(valid))
 
     return float(np.median(filtered))
+
+
+def roi_from_physical_size(
+    img_w: int,
+    img_h: int,
+    center_x: int,
+    center_y: int,
+    width_m: float,
+    height_m: float,
+    depth_m: float,
+    fx: float,
+    fy: Optional[float] = None,
+) -> ROI:
+    """Convert a fixed physical-size window to pixel ROI at a given depth."""
+    fy_eff = float(fx if fy is None else fy)
+    z = max(1e-3, float(depth_m))
+    w_px = max(1, int(round((float(width_m) * float(fx)) / z)))
+    h_px = max(1, int(round((float(height_m) * fy_eff) / z)))
+    x = int(round(center_x - w_px / 2.0))
+    y = int(round(center_y - h_px / 2.0))
+    return ROI(x=x, y=y, w=w_px, h=h_px).clamp(int(img_w), int(img_h))

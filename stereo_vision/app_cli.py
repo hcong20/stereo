@@ -120,6 +120,18 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")
+    parser.add_argument(
+        "--roi-physical-size-mm",
+        type=str,
+        default="800,100",
+        help="Physical ROI size in millimeters as w,h (default: 800,100)",
+    )
+    parser.add_argument(
+        "--roi-physical-center",
+        choices=["image-center", "static-roi-center"],
+        default="image-center",
+        help="Physical ROI center reference",
+    )
     parser.add_argument("--roi-disparity-only", action="store_true")
 
     parser.add_argument("--num-disp", type=int, default=128)
@@ -159,6 +171,16 @@ def parse_roi(text: str) -> ROI:
     if len(vals) != 4:
         raise ValueError("ROI must be x,y,w,h")
     return ROI(*vals)
+
+
+def parse_physical_size_mm(text: str) -> tuple[float, float]:
+    """Parse physical size text in w,h millimeters and return meters."""
+    vals = [float(v.strip()) for v in text.split(",")]
+    if len(vals) != 2:
+        raise ValueError("Physical ROI size must be w,h in millimeters")
+    w_m = max(1e-3, vals[0] / 1000.0)
+    h_m = max(1e-3, vals[1] / 1000.0)
+    return w_m, h_m
 
 
 def get_screen_size() -> tuple[int, int] | None:
