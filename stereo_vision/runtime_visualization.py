@@ -26,6 +26,7 @@ def build_viz_layers(
     last_switch_breakdown: Optional[dict],
     valid_pixels: int,
     total_pixels: int,
+    valid_ratio: float,
     positive_disp_pixels: int,
     clipped_by_max_depth: int,
     distance_raw: Optional[float],
@@ -100,21 +101,27 @@ def build_viz_layers(
     )
     left_viz = draw_text(
         left_viz,
+        f"ROI valid ratio: {valid_ratio * 100.0:.1f}%",
+        (10, 195),
+        (255, 255, 0),
+    )
+    left_viz = draw_text(
+        left_viz,
         f"ROI disp>0: {positive_disp_pixels}/{total_pixels}",
-        (10, 210),
+        (10, 225),
         (255, 255, 0),
     )
     left_viz = draw_text(
         left_viz,
         f"ROI clipped(maxD): {clipped_by_max_depth}",
-        (10, 240),
+        (10, 255),
         (255, 255, 0),
     )
 
     if distance_raw is not None:
-        left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 270), (200, 255, 200))
+        left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 285), (200, 255, 200))
     else:
-        left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 270), (0, 0, 255))
+        left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 285), (0, 0, 255))
 
     return left_viz, disp_vis
 

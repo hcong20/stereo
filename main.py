@@ -219,6 +219,12 @@ def main() -> None:
     )
     print(f"[INFO] preprocess_backend={preprocessor.backend_name}")
     print(f"[INFO] preprocess_detail={preprocessor.backend_reason}")
+    print(
+        "[INFO] ROI distance fusion: "
+        f"valid_ratio_min={float(args.roi_valid_ratio_min):.2f}, "
+        f"p10_weight={float(args.roi_p10_weight):.2f}, "
+        f"min_weight={float(args.roi_min_weight):.2f}"
+    )
     preview_nv12_bgr = bool(getattr(args, "nv12_preview_bgr", False))
     if preview_nv12_bgr:
         print("[INFO] NV12 preview color mode enabled (preview-only BGR conversion)")
@@ -398,6 +404,7 @@ def main() -> None:
             positive_disp_pixels = int((roi_disp > 0.0).sum())
             valid_pixels = int(np.isfinite(roi_depth).sum())
             total_pixels = int(roi_depth.size)
+            valid_ratio = (float(valid_pixels) / float(total_pixels)) if total_pixels > 0 else 0.0
 
             roi_depth_raw = np.full(roi_disp.shape, np.nan, dtype=np.float32)
             raw_valid = roi_disp > max(0.01, float(args.depth_min_disp))
@@ -414,6 +421,9 @@ def main() -> None:
                 depth_map,
                 roi_scaled,
                 min_valid_pixels=max(1, int(args.min_valid_pixels)),
+                min_valid_ratio=max(0.0, float(args.roi_valid_ratio_min)),
+                p10_weight=float(args.roi_p10_weight),
+                min_weight=float(args.roi_min_weight),
             )
             distance_filtered = distance_filter.update(distance_raw)
             if distance_filtered is not None and np.isfinite(distance_filtered) and distance_filtered > 0:
@@ -462,6 +472,7 @@ def main() -> None:
                 last_switch_breakdown=switch_state.last_switch_breakdown,
                 valid_pixels=valid_pixels,
                 total_pixels=total_pixels,
+                valid_ratio=valid_ratio,
                 positive_disp_pixels=positive_disp_pixels,
                 clipped_by_max_depth=clipped_by_max_depth,
                 distance_raw=distance_raw,

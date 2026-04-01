@@ -35,13 +35,23 @@ class ROI:
         return slice(self.y, self.y + self.h), slice(self.x, self.x + self.w)
 
 
-def robust_roi_distance(depth_map: np.ndarray, roi: ROI, min_valid_pixels: int = 10) -> Optional[float]:
-    """Estimate robust ROI depth using median after IQR outlier rejection.
+def robust_roi_distance(
+    depth_map: np.ndarray,
+    roi: ROI,
+    min_valid_pixels: int = 10,
+    min_valid_ratio: float = 0.0,
+    p10_weight: float = 0.7,
+    min_weight: float = 0.1,
+) -> Optional[float]:
+    """Estimate robust ROI depth using IQR filtering and weighted statistics.
 
     Args:
         depth_map: Depth image in meters (NaN for invalid pixels).
         roi: Region from which to compute a representative distance.
         min_valid_pixels: Minimum finite pixels required for a valid estimate.
+        min_valid_ratio: Minimum finite-depth ratio required in ROI.
+        p10_weight: Weight of P10 vs median in the base robust estimate.
+        min_weight: Extra weight of minimum depth fused after base estimate.
 
     Returns:
         Robust median depth in meters, or None if too few valid samples.
@@ -53,6 +63,11 @@ def robust_roi_distance(depth_map: np.ndarray, roi: ROI, min_valid_pixels: int =
 
     valid = patch[np.isfinite(patch)]
     if valid.size < min_valid_pixels:
+        return None
+
+    total = int(patch.size)
+    valid_ratio = (float(valid.size) / float(total)) if total > 0 else 0.0
+    if valid_ratio < max(0.0, float(min_valid_ratio)):
         return None
 
     # Interquartile statistics reduce influence from heavy-tail mismatch noise.
@@ -68,9 +83,17 @@ def robust_roi_distance(depth_map: np.ndarray, roi: ROI, min_valid_pixels: int =
     filtered = valid[(valid >= low) & (valid <= high)]
     if filtered.size == 0:
         # Keep a stable value even when IQR clipping becomes too aggressive.
-        return float(np.median(valid))
+        filtered = valid
 
-    return float(np.median(filtered))
+    # Blend robust low-percentile and median so we remain stable yet responsive.
+    p10 = float(np.percentile(filtered, 10))
+    p50 = float(np.percentile(filtered, 50))
+    dmin = float(np.min(filtered))
+
+    p10_w = float(np.clip(p10_weight, 0.0, 1.0))
+    min_w = float(np.clip(min_weight, 0.0, 1.0))
+    base = p10_w * p10 + (1.0 - p10_w) * p50
+    return float((1.0 - min_w) * base + min_w * dmin)
 
 
 def roi_from_physical_size(

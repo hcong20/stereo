@@ -151,6 +151,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--filter-window", type=int, default=5)
     parser.add_argument("--min-valid-pixels", type=int, default=10)
     parser.add_argument(
+        "--roi-valid-ratio-min",
+        type=float,
+        default=0.15,
+        help="Minimum finite-depth ratio inside ROI required to accept a raw measurement",
+    )
+    parser.add_argument(
+        "--roi-p10-weight",
+        type=float,
+        default=0.70,
+        help="Weight of P10 in blended robust distance (remaining weight goes to median)",
+    )
+    parser.add_argument(
+        "--roi-min-weight",
+        type=float,
+        default=0.10,
+        help="Extra blend weight for minimum depth after P10/median fusion",
+    )
+    parser.add_argument(
         "--profile-stages",
         action="store_true",
         help="Print per-stage average latency (capture/rectify/preprocess/disparity/depth/viz)",
