@@ -12,6 +12,7 @@ class PreprocessConfig:
     """Configuration for CPU preprocessing."""
 
     scale: float = 1.0
+    crop_height_ratio: float = 0.5
 
 
 class FramePreprocessor:
@@ -40,6 +41,21 @@ class FramePreprocessor:
         nh = max(1, int(h * scale))
         return cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
 
+    @staticmethod
+    def _center_crop_height(frame: np.ndarray, ratio: float) -> np.ndarray:
+        """Center-crop frame vertically by ratio while preserving width."""
+        if ratio >= 1.0:
+            return frame
+        if ratio <= 0.0:
+            raise ValueError(f"crop_height_ratio must be > 0, got {ratio}")
+        h, _ = frame.shape[:2]
+        target_h = max(1, int(h * ratio))
+        if target_h >= h:
+            return frame
+        y0 = (h - target_h) // 2
+        y1 = y0 + target_h
+        return frame[y0:y1, :]
+
 
     @staticmethod
     def _to_gray_if_needed(frame: np.ndarray) -> np.ndarray:
@@ -57,13 +73,15 @@ class FramePreprocessor:
     def process(
         self, left_img: np.ndarray, right_img: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Resize stereo pair and produce grayscale images for disparity.
+        """Resize/crop stereo pair and produce grayscale images for disparity.
 
         Returns:
             (left_resized, right_resized, left_gray, right_gray)
         """
         left_resized = self._cpu_resize(left_img, float(self.cfg.scale))
         right_resized = self._cpu_resize(right_img, float(self.cfg.scale))
-        left_gray = self._to_gray_if_needed(left_resized)
-        right_gray = self._to_gray_if_needed(right_resized)
-        return left_resized, right_resized, left_gray, right_gray
+        left_processed = self._center_crop_height(left_resized, float(self.cfg.crop_height_ratio))
+        right_processed = self._center_crop_height(right_resized, float(self.cfg.crop_height_ratio))
+        left_gray = self._to_gray_if_needed(left_processed)
+        right_gray = self._to_gray_if_needed(right_processed)
+        return left_processed, right_processed, left_gray, right_gray
