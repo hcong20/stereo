@@ -162,6 +162,7 @@ def build_runtime_context(args: Namespace) -> RuntimeLoopConfig:
     preprocessor = FramePreprocessor(
         PreprocessConfig(
             scale=runtime_cfg.scale,
+            crop_height_ratio=float(args.crop_height_ratio),
         )
     )
     print(f"[INFO] preprocess_backend={preprocessor.backend_name}")

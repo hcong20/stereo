@@ -119,6 +119,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--scale", type=float, default=1.0)
+    parser.add_argument(
+        "--crop-height-ratio",
+        type=float,
+        default=0.5,
+        help=(
+            "Vertical center-crop ratio applied after resize and before disparity. "
+            "Must be > 0; 1.0 disables crop"
+        ),
+    )
     parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")
     parser.add_argument(
         "--roi-physical-size-mm",
