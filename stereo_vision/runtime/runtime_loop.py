@@ -11,27 +11,30 @@ import cv2
 import numpy as np
 
 from stereo_vision.app_cli import PerfStats, get_screen_size
-from stereo_vision.depth import DepthEstimator
-from stereo_vision.disparity import StereoDisparityEstimator
-from stereo_vision.optimization import RuntimeOptimizationConfig
-from stereo_vision.preprocess import FramePreprocessor
-from stereo_vision.rectification import rectify_pair
-from stereo_vision.roi import ROI
-from stereo_vision.runtime_controls import process_runtime_key_events
-from stereo_vision.runtime_processing import (
+from stereo_vision.core.depth import DepthEstimator
+from stereo_vision.core.disparity import StereoDisparityEstimator
+from stereo_vision.core.rectification import rectify_pair
+from stereo_vision.core.roi import ROI
+from stereo_vision.pipeline.optimization import RuntimeOptimizationConfig
+from stereo_vision.pipeline.preprocess import FramePreprocessor
+from stereo_vision.runtime.runtime_controls import process_runtime_key_events
+from stereo_vision.runtime.runtime_processing import (
     compute_depth_and_distance,
     compute_disparity,
     compute_runtime_roi,
 )
-from stereo_vision.runtime_profile import StageProfiler
-from stereo_vision.runtime_switching import (
+from stereo_vision.runtime.runtime_profile import StageProfiler
+from stereo_vision.runtime.runtime_switching import (
     capture_active_frame_and_finalize,
     configure_switch_runtime_state,
     get_preview_pair_for_active_frame,
 )
-from stereo_vision.runtime_visualization import apply_click_probe_overlay, compose_runtime_visualization
-from stereo_vision.runtime_tuning import RoiTuneController
-from stereo_vision.visualization import VizState, register_click
+from stereo_vision.runtime.runtime_visualization import (
+    apply_click_probe_overlay,
+    compose_runtime_visualization,
+)
+from stereo_vision.runtime.runtime_tuning import RoiTuneController
+from stereo_vision.ui.visualization import VizState, register_click
 
 
 @dataclass(frozen=True)

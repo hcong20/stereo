@@ -6,8 +6,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from stereo_vision.camera_worker_buffered import BufferedCameraWorker
-from stereo_vision.camera_manager_helpers import (
+from stereo_vision.capture.camera_worker_buffered import BufferedCameraWorker
+from stereo_vision.capture.camera_manager_helpers import (
     aligned_live_indices,
     build_group_maps,
     build_pending_switch_payload,
@@ -16,7 +16,7 @@ from stereo_vision.camera_manager_helpers import (
     normalize_group_ids,
     pick_freshest_fallback,
 )
-from stereo_vision.camera_worker import CameraConfig
+from stereo_vision.capture.camera_worker import CameraConfig
 
 
 class CameraManger:

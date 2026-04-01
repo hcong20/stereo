@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from stereo_vision.camera import CameraManger
+from stereo_vision.capture.camera import CameraManger
 
 
 @dataclass

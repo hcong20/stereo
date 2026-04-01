@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from stereo_vision.filters import DistanceFilter, TemporalFilterConfig
+from stereo_vision.pipeline.filters import DistanceFilter, TemporalFilterConfig
 
 
 class RoiTuneController:

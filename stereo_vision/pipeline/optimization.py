@@ -9,7 +9,7 @@ from typing import Tuple
 import cv2
 import numpy as np
 
-from stereo_vision.roi import ROI
+from stereo_vision.core.roi import ROI
 
 
 @dataclass

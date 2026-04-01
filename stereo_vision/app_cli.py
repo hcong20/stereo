@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from stereo_vision.roi import ROI
+from stereo_vision.core.roi import ROI
 
 
 @dataclass

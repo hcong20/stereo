@@ -6,9 +6,9 @@ from typing import Any, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from stereo_vision.roi import ROI
-from stereo_vision.rectification import rectify_pair
-from stereo_vision.visualization import colorize_disparity, draw_roi, draw_text
+from stereo_vision.core.rectification import rectify_pair
+from stereo_vision.core.roi import ROI
+from stereo_vision.ui.visualization import colorize_disparity, draw_roi, draw_text
 
 
 def build_viz_layers(

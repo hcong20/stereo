@@ -13,17 +13,17 @@ from stereo_vision.app_cli import (
     resolve_baseline_m,
     safe_num_disparities_for_roi,
 )
-from stereo_vision.calibration import load_stereo_calibration
-from stereo_vision.depth import DepthConfig, DepthEstimator
-from stereo_vision.disparity import SGBMConfig, StereoDisparityEstimator
-from stereo_vision.optimization import RuntimeOptimizationConfig
-from stereo_vision.preprocess import FramePreprocessor, PreprocessConfig
-from stereo_vision.rectification import build_rectification_maps
-from stereo_vision.roi import ROI, roi_from_physical_size
-from stereo_vision.runtime_loop import RuntimeLoopConfig
-from stereo_vision.runtime_profile import StageProfiler
-from stereo_vision.runtime_tuning import RoiTuneController
-from stereo_vision.startup import initialize_capture
+from stereo_vision.core.calibration import load_stereo_calibration
+from stereo_vision.core.depth import DepthConfig, DepthEstimator
+from stereo_vision.core.disparity import SGBMConfig, StereoDisparityEstimator
+from stereo_vision.core.rectification import build_rectification_maps
+from stereo_vision.core.roi import ROI, roi_from_physical_size
+from stereo_vision.pipeline.optimization import RuntimeOptimizationConfig
+from stereo_vision.pipeline.preprocess import FramePreprocessor, PreprocessConfig
+from stereo_vision.runtime.runtime_loop import RuntimeLoopConfig
+from stereo_vision.runtime.runtime_profile import StageProfiler
+from stereo_vision.runtime.runtime_tuning import RoiTuneController
+from stereo_vision.capture.startup import initialize_capture
 
 
 def build_runtime_context(args: Namespace) -> RuntimeLoopConfig:

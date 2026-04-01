@@ -10,11 +10,11 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from stereo_vision.frame_formats import (
+from stereo_vision.capture.frame_formats import (
     convert_gstreamer_frame_if_needed,
     split_nv12_stereo_to_gray,
 )
-from stereo_vision.gstreamer_pipelines import (
+from stereo_vision.capture.gstreamer_pipelines import (
     build_usb_gstreamer_pipeline,
     build_usb_gstreamer_pipeline_candidates,
 )

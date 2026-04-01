@@ -9,8 +9,8 @@ and live OpenCV visualization.
 import cv2
 
 from stereo_vision.app_cli import parse_args
-from stereo_vision.runtime_builder import build_runtime_context
-from stereo_vision.runtime_loop import run_runtime_loop
+from stereo_vision.runtime.runtime_builder import build_runtime_context
+from stereo_vision.runtime.runtime_loop import run_runtime_loop
 
 
 def _quiet_opencv_logs() -> None:

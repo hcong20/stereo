@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from stereo_vision.camera_worker import CameraConfig, CameraWorker
+from stereo_vision.capture.camera_worker import CameraConfig, CameraWorker
 
 
 class BufferedCameraWorker:

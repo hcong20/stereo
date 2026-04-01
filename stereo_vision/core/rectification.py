@@ -10,7 +10,7 @@ from typing import Tuple
 import cv2
 import numpy as np
 
-from stereo_vision.calibration import StereoCalibration
+from stereo_vision.core.calibration import StereoCalibration
 
 
 @dataclass
