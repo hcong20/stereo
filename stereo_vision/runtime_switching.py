@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from stereo_vision.camera import MultiStereoCamera
+from stereo_vision.camera import CameraManger
 
 
 @dataclass
@@ -30,7 +30,7 @@ def configure_switch_runtime_state(
 ) -> SwitchRuntimeState:
     """Build runtime switch config and apply single-active timeout safety policy."""
     timeout_s = float(switch_timeout_s)
-    if multi_mode and isinstance(cam, MultiStereoCamera) and cam.single_active_mode and timeout_s < 3.0:
+    if multi_mode and isinstance(cam, CameraManger) and cam.single_active_mode and timeout_s < 3.0:
         print(
             "[WARN] Single-active mode detected with slow camera restart characteristics; "
             f"raising runtime switch timeout from {timeout_s:.2f}s to 3.00s"
@@ -75,7 +75,7 @@ def read_active_frame(
 
 def update_switch_breakdown_snapshot(multi_mode: bool, cam: Any, state: SwitchRuntimeState) -> None:
     """Pull latest switch breakdown from camera backend if available."""
-    if multi_mode and isinstance(cam, MultiStereoCamera):
+    if multi_mode and isinstance(cam, CameraManger):
         breakdown = cam.get_last_switch_breakdown()
         if breakdown is not None:
             state.last_switch_breakdown = breakdown

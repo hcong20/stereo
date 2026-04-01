@@ -50,7 +50,7 @@ class CameraConfig:
     fast_reopen: bool = True
 
 
-class StereoCamera:
+class CameraWorker:
     """Capture combined stereo frame and split into left/right images.
 
     This wrapper hides backend differences (V4L2 vs GStreamer) and always

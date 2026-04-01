@@ -7,15 +7,15 @@ from typing import Optional
 
 import numpy as np
 
-from stereo_vision.camera_multi import MultiStereoCamera
-from stereo_vision.camera_single import CameraConfig, StereoCamera
+from stereo_vision.camera_manger import CameraManger
+from stereo_vision.camera_worker import CameraConfig, CameraWorker
 
 
 @dataclass
 class StartupResult:
     """Capture startup state passed into the runtime loop."""
 
-    cam: MultiStereoCamera | StereoCamera
+    cam: CameraManger | CameraWorker
     multi_mode: bool
     switch_timeout_s: float
     active_idx: int
@@ -41,7 +41,7 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
     """Initialize capture based on CLI settings and return first valid stereo frame."""
     switch_timeout_s = max(0.05, float(args.switch_timeout_ms) / 1000.0)
     multi_mode = len(device_list) > 1
-    cam: Optional[MultiStereoCamera | StereoCamera] = None
+    cam: Optional[CameraManger | CameraWorker] = None
     active_idx = 0
     bus_groups = _parse_bus_groups(getattr(args, "bus_groups", ""), len(device_list))
     gst_pipeline_template = str(getattr(args, "gstreamer_pipeline", "") or "").strip()
@@ -87,7 +87,7 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                     "Example: --bus-groups 0,0,2,2"
                 )
 
-            cam = MultiStereoCamera(
+            cam = CameraManger(
                 cam_cfgs,
                 single_active_mode=True,
                 initial_active_index=requested_idx,
@@ -139,7 +139,7 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
             print("[INFO] capture_mode=group-linked-single-active")
             print(f"[INFO] bus_groups={bus_groups}, group_live_mode={cam.group_live_mode}")
         else:
-            cam = StereoCamera(cam_cfgs[0])
+            cam = CameraWorker(cam_cfgs[0])
             cam.open()
             left0, right0, _ = cam.read()
             active_idx = 0

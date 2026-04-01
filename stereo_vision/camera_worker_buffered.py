@@ -6,10 +6,10 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from stereo_vision.camera_single import CameraConfig, StereoCamera
+from stereo_vision.camera_worker import CameraConfig, CameraWorker
 
 
-class BufferedStereoCamera:
+class BufferedCameraWorker:
     """Continuously capture from one stereo device in a background thread.
 
     The latest split frame is kept in memory so consumers can fetch a fresh frame
@@ -23,7 +23,7 @@ class BufferedStereoCamera:
     ):
         self.cfg = cfg
         self.name = name or cfg.device
-        self._camera = StereoCamera(cfg)
+        self._camera = CameraWorker(cfg)
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._state_lock = threading.Lock()

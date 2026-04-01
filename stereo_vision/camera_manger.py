@@ -6,8 +6,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from stereo_vision.camera_buffered import BufferedStereoCamera
-from stereo_vision.camera_multi_helpers import (
+from stereo_vision.camera_worker_buffered import BufferedCameraWorker
+from stereo_vision.camera_manager_helpers import (
     aligned_live_indices,
     build_group_maps,
     build_pending_switch_payload,
@@ -16,10 +16,10 @@ from stereo_vision.camera_multi_helpers import (
     normalize_group_ids,
     pick_freshest_fallback,
 )
-from stereo_vision.camera_single import CameraConfig
+from stereo_vision.camera_worker import CameraConfig
 
 
-class MultiStereoCamera:
+class CameraManger:
     """Manage multiple pre-opened stereo inputs with fast active-source switching."""
 
     def __init__(
@@ -32,8 +32,8 @@ class MultiStereoCamera:
     ):
         if len(configs) == 0:
             raise ValueError("At least one camera config is required")
-        self.sources: List[BufferedStereoCamera] = [
-            BufferedStereoCamera(
+        self.sources: List[BufferedCameraWorker] = [
+            BufferedCameraWorker(
                 cfg,
                 name=f"{idx}:{cfg.device}",
             )
