@@ -169,6 +169,9 @@ python3 main.py --quiet-opencv-log
 RGA-ready preprocessing backend selection:
 
 ```bash
+# Default mode: force RGA (fails fast if backend module is unavailable)
+python3 main.py --rga-module rga_helper
+
 # Auto mode: try RGA module first, fallback to CPU
 python3 main.py --preprocess-backend auto --rga-module rga_helper
 
@@ -177,13 +180,26 @@ python3 main.py --preprocess-backend cpu
 
 # Force RGA (fails fast if module is not installed)
 python3 main.py --preprocess-backend rga --rga-module rga_helper
+
+# Experimental: enable gray-direct RGA path
+python3 main.py --preprocess-backend rga --rga-gray-direct
 ```
+
+In multi-camera mode, `--preprocess-backend auto` is still conservative by default
+and is forced to CPU. Explicit
+`--preprocess-backend rga` keeps the RGA path.
 
 RGA backend module contract (`rga_helper` by default):
 
 - Must export `preprocess_pair_bgr_to_gray(left_bgr, right_bgr, scale)`
 - Must return `(left_resized_bgr, right_resized_bgr, left_gray, right_gray)`
+- Optional: export `preprocess_pair_gray_to_gray(left_gray, right_gray, scale)`
+- Gray-direct API should return `(left_resized_gray, right_resized_gray, left_gray, right_gray)`
 - Optional: export `is_available()` returning `True` only when hardware backend is usable
+
+Gray-direct mode is disabled by default and must be explicitly enabled with
+`--rga-gray-direct` because some RGA stacks may become unstable with direct
+single-channel resize operations.
 
 Included module:
 
@@ -198,6 +214,14 @@ Troubleshooting (still using CPU):
   - `is_available()` returning `True`
   - `preprocess_pair_bgr_to_gray(...)`
 - On RK3588, having `/dev/rga` and `librga` alone is not enough for this Python path; you still need a Python binding or a custom C++/pybind adapter.
+- For native RGA crash investigation, enable C++ step logs:
+
+```bash
+ROCKCHIP_RGA_DEBUG=1 python3 main.py --preprocess-backend rga
+```
+
+  Logs are prefixed with `[rockchip_rga]` and include per-call sequence and step markers
+  (wrapbuffer/imresize/imcvtcolor), so the last emitted line indicates where execution stopped.
 
 Build native `rockchip_rga` backend on this repo:
 

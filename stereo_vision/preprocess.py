@@ -26,6 +26,15 @@ class RGABackendProtocol(Protocol):
             (left_resized_bgr, right_resized_bgr, left_gray, right_gray)
         """
 
+    def preprocess_pair_gray_to_gray(
+        self, left_gray: np.ndarray, right_gray: np.ndarray, scale: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Optional gray-direct API.
+
+        Returns:
+            (left_resized_gray, right_resized_gray, left_gray, right_gray)
+        """
+
 
 @dataclass
 class PreprocessConfig:
@@ -34,6 +43,7 @@ class PreprocessConfig:
     scale: float = 1.0
     backend: str = "auto"
     rga_module: str = "rga_helper"
+    rga_gray_direct: bool = False
 
 
 class FramePreprocessor:
@@ -44,6 +54,7 @@ class FramePreprocessor:
         self._rga_backend: Optional[RGABackendProtocol] = None
         self._backend_reason: str = ""
         self._runtime_fallback_logged = False
+        self._gray_retry_logged = False
         self._resolved_backend = self._resolve_backend()
 
     @property
@@ -119,8 +130,36 @@ class FramePreprocessor:
         out = frame
         if out.dtype != np.uint8:
             out = out.astype(np.uint8, copy=False)
+
+        # Some capture paths provide grayscale Y plane; adapt to BGR contract.
+        if out.ndim == 2:
+            out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+        elif out.ndim == 3 and out.shape[2] == 1:
+            out = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+        elif out.ndim == 3 and out.shape[2] == 4:
+            out = cv2.cvtColor(out, cv2.COLOR_BGRA2BGR)
+
         if out.ndim != 3 or out.shape[2] != 3:
             raise ValueError(f"RGA expects BGR image with shape HxWx3, got {out.shape}")
+        if not out.flags.c_contiguous:
+            out = np.ascontiguousarray(out)
+        return out
+
+    @staticmethod
+    def _is_gray_like(frame: np.ndarray) -> bool:
+        """Return whether frame is grayscale or single-channel layout."""
+        return bool(frame.ndim == 2 or (frame.ndim == 3 and frame.shape[2] == 1))
+
+    @staticmethod
+    def _prepare_rga_gray_input(frame: np.ndarray) -> np.ndarray:
+        """Normalize input layout for gray-direct RGA backend calls."""
+        out = frame
+        if out.dtype != np.uint8:
+            out = out.astype(np.uint8, copy=False)
+        if out.ndim == 3 and out.shape[2] == 1:
+            out = out[:, :, 0]
+        if out.ndim != 2:
+            raise ValueError(f"RGA gray-direct expects HxW image, got {out.shape}")
         if not out.flags.c_contiguous:
             out = np.ascontiguousarray(out)
         return out
@@ -134,6 +173,8 @@ class FramePreprocessor:
             return frame[:, :, 0]
         if frame.ndim == 3 and frame.shape[2] == 3:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
         raise ValueError(f"Unsupported frame shape for grayscale conversion: {frame.shape}")
 
     def process(
@@ -146,6 +187,26 @@ class FramePreprocessor:
         """
         if self._resolved_backend == "rga" and self._rga_backend is not None:
             try:
+                gray_fn = getattr(self._rga_backend, "preprocess_pair_gray_to_gray", None)
+                if (
+                    bool(self.cfg.rga_gray_direct)
+                    and callable(gray_fn)
+                    and self._is_gray_like(left_img)
+                    and self._is_gray_like(right_img)
+                ):
+                    try:
+                        left_gray_in = self._prepare_rga_gray_input(left_img)
+                        right_gray_in = self._prepare_rga_gray_input(right_img)
+                        return gray_fn(left_gray_in, right_gray_in, float(self.cfg.scale))
+                    except Exception as gray_exc:
+                        if not self._gray_retry_logged:
+                            print(
+                                "[WARN] RGA gray-direct path failed; retrying BGR path: "
+                                f"{gray_exc}"
+                            )
+                            self._gray_retry_logged = True
+
+                # Stable default: use BGR contract path unless gray-direct is explicitly enabled.
                 left_in = self._prepare_rga_input(left_img)
                 right_in = self._prepare_rga_input(right_img)
                 return self._rga_backend.preprocess_pair_bgr_to_gray(

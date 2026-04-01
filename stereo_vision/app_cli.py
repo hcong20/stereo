@@ -122,8 +122,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preprocess-backend",
         choices=["auto", "cpu", "rga"],
-        default="auto",
-        help="Frame preprocess backend (RGA requires external module)",
+        default="rga",
+        help=(
+            "Frame preprocess backend (default: rga; use auto to try RGA with CPU fallback)"
+        ),
     )
     parser.add_argument(
         "--rga-module",
@@ -132,11 +134,11 @@ def parse_args() -> argparse.Namespace:
         help="Python module name providing RGA preprocess_pair_bgr_to_gray",
     )
     parser.add_argument(
-        "--allow-unsafe-rga-multicam",
+        "--rga-gray-direct",
         action="store_true",
         help=(
-            "Allow RGA preprocess in multi-camera mode. "
-            "Disabled by default because some RGA stacks can hang the system during source switching."
+            "Enable experimental gray-direct RGA preprocess path. "
+            "Some RGA stacks may be unstable with this mode."
         ),
     )
     parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")

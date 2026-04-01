@@ -184,23 +184,34 @@ def main() -> None:
         scale=scale,
         disparity_roi_only=bool(args.roi_disparity_only),
     )
-    preprocess_backend = str(args.preprocess_backend)
-    if multi_mode and preprocess_backend != "cpu" and not bool(args.allow_unsafe_rga_multicam):
+    preprocess_backend = str(args.preprocess_backend).strip().lower()
+    if multi_mode and preprocess_backend == "auto":
         print(
-            "[WARN] Multi-camera mode detected: forcing preprocess backend to CPU "
-            "to avoid RGA switch instability. Use --allow-unsafe-rga-multicam to override."
+            "[WARN] Multi-camera mode + preprocess-backend=auto: forcing preprocess "
+            "backend to CPU to avoid possible RGA switch instability."
         )
         preprocess_backend = "cpu"
+    elif multi_mode and preprocess_backend == "rga":
+        print(
+            "[INFO] Multi-camera mode with explicit preprocess-backend=rga: "
+            "keeping RGA path."
+        )
 
     preprocessor = FramePreprocessor(
         PreprocessConfig(
             scale=runtime_cfg.scale,
             backend=preprocess_backend,
             rga_module=str(args.rga_module),
+            rga_gray_direct=bool(getattr(args, "rga_gray_direct", False)),
         )
     )
     print(f"[INFO] preprocess_backend={preprocessor.backend_name}")
     print(f"[INFO] preprocess_detail={preprocessor.backend_reason}")
+    if bool(getattr(args, "rga_gray_direct", False)):
+        print(
+            "[WARN] Experimental RGA gray-direct mode enabled; "
+            "disable --rga-gray-direct if system instability occurs."
+        )
     preview_nv12_bgr = bool(getattr(args, "nv12_preview_bgr", False))
     if preview_nv12_bgr:
         print("[INFO] NV12 preview color mode enabled (preview-only BGR conversion)")
