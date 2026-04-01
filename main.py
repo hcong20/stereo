@@ -405,6 +405,17 @@ def main() -> None:
             valid_pixels = int(np.isfinite(roi_depth).sum())
             total_pixels = int(roi_depth.size)
             valid_ratio = (float(valid_pixels) / float(total_pixels)) if total_pixels > 0 else 0.0
+            min_valid_pixels = max(1, int(args.min_valid_pixels))
+            min_valid_ratio = max(0.0, float(args.roi_valid_ratio_min))
+
+            # Surface ROI gate failures directly in overlay for field debugging.
+            roi_gate_note = None
+            if valid_pixels < min_valid_pixels:
+                roi_gate_note = f"gate: valid pixels {valid_pixels} < {min_valid_pixels}"
+            elif valid_ratio < min_valid_ratio:
+                roi_gate_note = (
+                    f"gate: valid ratio {valid_ratio * 100.0:.1f}% < {min_valid_ratio * 100.0:.1f}%"
+                )
 
             roi_depth_raw = np.full(roi_disp.shape, np.nan, dtype=np.float32)
             raw_valid = roi_disp > max(0.01, float(args.depth_min_disp))
@@ -420,8 +431,8 @@ def main() -> None:
             distance_raw = robust_roi_distance(
                 depth_map,
                 roi_scaled,
-                min_valid_pixels=max(1, int(args.min_valid_pixels)),
-                min_valid_ratio=max(0.0, float(args.roi_valid_ratio_min)),
+                min_valid_pixels=min_valid_pixels,
+                min_valid_ratio=min_valid_ratio,
                 p10_weight=float(args.roi_p10_weight),
                 min_weight=float(args.roi_min_weight),
             )
@@ -476,6 +487,7 @@ def main() -> None:
                 positive_disp_pixels=positive_disp_pixels,
                 clipped_by_max_depth=clipped_by_max_depth,
                 distance_raw=distance_raw,
+                roi_gate_note=roi_gate_note,
             )
             t_depth = time.perf_counter()
 

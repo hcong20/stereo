@@ -30,6 +30,7 @@ def build_viz_layers(
     positive_disp_pixels: int,
     clipped_by_max_depth: int,
     distance_raw: Optional[float],
+    roi_gate_note: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build left diagnostic overlay and colorized disparity visualization."""
     disp_vis = colorize_disparity(
@@ -122,6 +123,9 @@ def build_viz_layers(
         left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 285), (200, 255, 200))
     else:
         left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 285), (0, 0, 255))
+
+    if roi_gate_note:
+        left_viz = draw_text(left_viz, f"ROI Gate: {roi_gate_note}", (10, 315), (0, 0, 255))
 
     return left_viz, disp_vis
 
