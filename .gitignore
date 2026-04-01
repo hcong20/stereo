@@ -37,6 +37,3 @@ dist/
 *.egg-info/
 .pytest_cache/
 
-# Native RGA extension build artifacts
-native_rga/build/
-rockchip_rga*.so

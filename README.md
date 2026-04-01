@@ -166,73 +166,10 @@ To suppress non-fatal OpenCV/GStreamer startup warnings:
 python3 main.py --quiet-opencv-log
 ```
 
-RGA-ready preprocessing backend selection:
+Preprocessing path is CPU-only:
 
-```bash
-# Default mode: force RGA (fails fast if backend module is unavailable)
-python3 main.py --rga-module rga_helper
-
-# Auto mode: try RGA module first, fallback to CPU
-python3 main.py --preprocess-backend auto --rga-module rga_helper
-
-# Force CPU preprocessing
-python3 main.py --preprocess-backend cpu
-
-# Force RGA (fails fast if module is not installed)
-python3 main.py --preprocess-backend rga --rga-module rga_helper
-
-# Experimental: enable gray-direct RGA path
-python3 main.py --preprocess-backend rga --rga-gray-direct
-```
-
-In multi-camera mode, `--preprocess-backend auto` is still conservative by default
-and is forced to CPU. Explicit
-`--preprocess-backend rga` keeps the RGA path.
-
-RGA backend module contract (`rga_helper` by default):
-
-- Must export `preprocess_pair_bgr_to_gray(left_bgr, right_bgr, scale)`
-- Must return `(left_resized_bgr, right_resized_bgr, left_gray, right_gray)`
-- Optional: export `preprocess_pair_gray_to_gray(left_gray, right_gray, scale)`
-- Gray-direct API should return `(left_resized_gray, right_resized_gray, left_gray, right_gray)`
-- Optional: export `is_available()` returning `True` only when hardware backend is usable
-
-Gray-direct mode is disabled by default and must be explicitly enabled with
-`--rga-gray-direct` because some RGA stacks may become unstable with direct
-single-channel resize operations.
-
-Included module:
-
-- `rga_helper.py` is provided as an adapter skeleton.
-- In `auto` mode, it reports unavailable unless a compatible RGA Python binding exists.
-- To enable real hardware acceleration, implement your binding adapter in `rga_helper.py` function `_rga_preprocess_impl(...)`.
-
-Troubleshooting (still using CPU):
-
-- Startup log now prints `preprocess_detail=...` with fallback reason.
-- If you see fallback to CPU, check that your selected module exports:
-  - `is_available()` returning `True`
-  - `preprocess_pair_bgr_to_gray(...)`
-- On RK3588, having `/dev/rga` and `librga` alone is not enough for this Python path; you still need a Python binding or a custom C++/pybind adapter.
-- For native RGA crash investigation, enable C++ step logs:
-
-```bash
-ROCKCHIP_RGA_DEBUG=1 python3 main.py --preprocess-backend rga
-```
-
-  Logs are prefixed with `[rockchip_rga]` and include per-call sequence and step markers
-  (wrapbuffer/imresize/imcvtcolor), so the last emitted line indicates where execution stopped.
-
-Build native `rockchip_rga` backend on this repo:
-
-```bash
-cd native_rga
-./build.sh
-cd ..
-python3 main.py --preprocess-backend rga --rga-module rga_helper
-```
-
-If startup prints `preprocess_backend=rga`, hardware preprocess path is active.
+- Runtime resize + grayscale conversion are handled in Python/OpenCV.
+- Startup logs print `preprocess_backend=cpu` and `preprocess_detail=cpu-only preprocess path`.
 
 ## SGBM Tuning Guide (RK3588)
 
@@ -251,17 +188,6 @@ If startup prints `preprocess_backend=rga`, hardware preprocess path is active.
 - Use grayscale for matcher input.
 - Prefer ROI-only disparity when your measurement target is fixed.
 - Avoid full-frame post-processing; only process ROI for statistics.
-- If available, offload resize/colorspace to RGA in a C++ helper.
-
-## RGA Integration Suggestion
-
-Python OpenCV does not expose RGA directly. For best RK3588 performance:
-
-- Build a small C++ helper with `librga` (`im2d`) to perform:
-  - YUYV/NV12 -> GRAY/BGR conversion
-  - Resize to matcher resolution
-- Share frame memory using DMA-BUF where possible.
-- Call helper from Python via a lightweight binding (`ctypes` or `pybind11`) only if needed.
 
 ## Multi-Camera Switching (< 500ms)
 

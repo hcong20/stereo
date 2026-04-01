@@ -119,28 +119,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--scale", type=float, default=1.0)
-    parser.add_argument(
-        "--preprocess-backend",
-        choices=["auto", "cpu", "rga"],
-        default="rga",
-        help=(
-            "Frame preprocess backend (default: rga; use auto to try RGA with CPU fallback)"
-        ),
-    )
-    parser.add_argument(
-        "--rga-module",
-        type=str,
-        default="rga_helper",
-        help="Python module name providing RGA preprocess_pair_bgr_to_gray",
-    )
-    parser.add_argument(
-        "--rga-gray-direct",
-        action="store_true",
-        help=(
-            "Enable experimental gray-direct RGA preprocess path. "
-            "Some RGA stacks may be unstable with this mode."
-        ),
-    )
     parser.add_argument("--roi", type=str, default="270,175,100,70", help="x,y,w,h")
     parser.add_argument("--roi-disparity-only", action="store_true")
 

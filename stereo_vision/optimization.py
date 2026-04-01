@@ -49,9 +49,3 @@ def crop_for_disparity(gray_l: np.ndarray, gray_r: np.ndarray, roi: ROI) -> Tupl
     return gray_l[ys, xs], gray_r[ys, xs], roi
 
 
-def rga_resize_note() -> str:
-    """Return guidance for moving resize work to RK3588 RGA in C/C++."""
-    return (
-        "For RK3588, use librga/im2d for resize+colorspace in C++ when Python cv2.resize becomes a bottleneck. "
-        "In Python, keep resize minimal and prefer camera-side resolution settings first."
-    )
