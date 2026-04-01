@@ -294,6 +294,8 @@ def main() -> None:
 
     swap_lr = bool(args.swap_lr)
     viz_state = VizState()
+    runtime_note_text: str | None = None
+    runtime_note_until = 0.0
 
     win = "stereo_distance"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -551,6 +553,7 @@ def main() -> None:
                 distance_raw=distance_raw,
                 roi_gate_note=roi_gate_note,
                 roi_tune_preset=roi_tune_preset,
+                runtime_note=(runtime_note_text if time.perf_counter() < runtime_note_until else None),
             )
             t_depth = time.perf_counter()
 
@@ -597,12 +600,20 @@ def main() -> None:
                 swap_lr = not swap_lr
             if key == ord("z"):
                 apply_roi_tune_preset("near")
+                runtime_note_text = "Preset switched: near"
+                runtime_note_until = time.perf_counter() + 2.0
             if key == ord("x"):
                 apply_roi_tune_preset("mid")
+                runtime_note_text = "Preset switched: mid"
+                runtime_note_until = time.perf_counter() + 2.0
             if key == ord("c"):
                 apply_roi_tune_preset("far")
+                runtime_note_text = "Preset switched: far"
+                runtime_note_until = time.perf_counter() + 2.0
             if key == ord("v"):
                 apply_roi_tune_preset("off")
+                runtime_note_text = "Preset switched: off"
+                runtime_note_until = time.perf_counter() + 2.0
 
             if multi_mode:
                 req_idx = decode_switch_index(key_raw, len(device_list))

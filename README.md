@@ -131,6 +131,8 @@ c -> far
 v -> off (restore manual CLI values)
 ```
 
+Each hotkey switch shows a short green on-screen confirmation message for about 2 seconds.
+
 Manual override still works and takes effect after preset selection:
 
 ```bash
