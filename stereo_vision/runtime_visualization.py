@@ -31,6 +31,7 @@ def build_viz_layers(
     clipped_by_max_depth: int,
     distance_raw: Optional[float],
     roi_gate_note: Optional[str] = None,
+    roi_tune_preset: str = "off",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build left diagnostic overlay and colorized disparity visualization."""
     disp_vis = colorize_disparity(
@@ -50,10 +51,11 @@ def build_viz_layers(
 
     left_viz = draw_text(left_viz, f"FPS: {fps:.1f}", (10, 60), (255, 255, 0))
     left_viz = draw_text(left_viz, f"Latency: {latency_ms:.1f} ms", (10, 90), (255, 255, 0))
+    left_viz = draw_text(left_viz, f"ROI Preset: {roi_tune_preset}", (10, 105), (255, 255, 0))
     left_viz = draw_text(
         left_viz,
         f"Input: {active_idx + 1}/{len(device_list)} ({device_list[active_idx]})",
-        (10, 120),
+        (10, 130),
         (255, 255, 0),
     )
 
@@ -61,7 +63,7 @@ def build_viz_layers(
         left_viz = draw_text(
             left_viz,
             f"Switch latency: {last_switch_latency_ms:.1f} ms",
-            (10, 150),
+            (10, 160),
             (200, 255, 200),
         )
     elif switch_pending is not None:
@@ -71,14 +73,14 @@ def build_viz_layers(
         left_viz = draw_text(
             left_viz,
             f"Switching to input {pending_idx + 1}: {pending_ms:.0f} ms",
-            (10, 150),
+            (10, 160),
             (0, 215, 255),
         )
     else:
         left_viz = draw_text(
             left_viz,
             "Switch latency: N/A",
-            (10, 150),
+            (10, 160),
             (255, 255, 0),
         )
 
@@ -97,35 +99,35 @@ def build_viz_layers(
     left_viz = draw_text(
         left_viz,
         f"ROI valid: {valid_pixels}/{total_pixels}",
-        (10, 180),
+        (10, 190),
         (255, 255, 0),
     )
     left_viz = draw_text(
         left_viz,
         f"ROI valid ratio: {valid_ratio * 100.0:.1f}%",
-        (10, 195),
+        (10, 205),
         (255, 255, 0),
     )
     left_viz = draw_text(
         left_viz,
         f"ROI disp>0: {positive_disp_pixels}/{total_pixels}",
-        (10, 225),
+        (10, 235),
         (255, 255, 0),
     )
     left_viz = draw_text(
         left_viz,
         f"ROI clipped(maxD): {clipped_by_max_depth}",
-        (10, 255),
+        (10, 265),
         (255, 255, 0),
     )
 
     if distance_raw is not None:
-        left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 285), (200, 255, 200))
+        left_viz = draw_text(left_viz, f"ROI Raw: {distance_raw * 1000.0:.1f} mm", (10, 295), (200, 255, 200))
     else:
-        left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 285), (0, 0, 255))
+        left_viz = draw_text(left_viz, "ROI Raw: N/A", (10, 295), (0, 0, 255))
 
     if roi_gate_note:
-        left_viz = draw_text(left_viz, f"ROI Gate: {roi_gate_note}", (10, 315), (0, 0, 255))
+        left_viz = draw_text(left_viz, f"ROI Gate: {roi_gate_note}", (10, 325), (0, 0, 255))
 
     return left_viz, disp_vis
 

@@ -122,6 +122,15 @@ python3 main.py --roi-tune-preset mid
 python3 main.py --roi-tune-preset far
 ```
 
+Runtime hotkeys for preset switching (no restart):
+
+```bash
+z -> near
+x -> mid
+c -> far
+v -> off (restore manual CLI values)
+```
+
 Manual override still works and takes effect after preset selection:
 
 ```bash

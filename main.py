@@ -199,39 +199,66 @@ def main() -> None:
     )
     active_num_disp = effective_num_disp
 
-    # Optional one-shot tuning presets for faster field bring-up.
-    roi_tune_preset = str(getattr(args, "roi_tune_preset", "off"))
-    if roi_tune_preset != "off":
-        if roi_tune_preset == "near":
+    manual_roi_valid_ratio_min = float(args.roi_valid_ratio_min)
+    manual_roi_p10_weight = float(args.roi_p10_weight)
+    manual_roi_min_weight = float(args.roi_min_weight)
+    manual_filter_window = int(args.filter_window)
+    manual_ema_alpha = float(args.ema_alpha)
+    manual_max_jump = float(args.max_jump)
+
+    def apply_roi_tune_preset(preset: str) -> None:
+        nonlocal distance_filter, roi_tune_preset
+        roi_tune_preset = preset
+        if preset == "off":
+            args.roi_valid_ratio_min = manual_roi_valid_ratio_min
+            args.roi_p10_weight = manual_roi_p10_weight
+            args.roi_min_weight = manual_roi_min_weight
+            args.filter_window = manual_filter_window
+            args.ema_alpha = manual_ema_alpha
+            args.max_jump = manual_max_jump
+        elif preset == "near":
             args.roi_valid_ratio_min = 0.25
             args.roi_p10_weight = 0.80
             args.roi_min_weight = 0.05
             args.filter_window = 7
             args.ema_alpha = 0.45
             args.max_jump = 0.60
-        elif roi_tune_preset == "mid":
+        elif preset == "mid":
             args.roi_valid_ratio_min = 0.15
             args.roi_p10_weight = 0.70
             args.roi_min_weight = 0.10
             args.filter_window = 5
             args.ema_alpha = 0.35
             args.max_jump = 1.00
-        elif roi_tune_preset == "far":
+        elif preset == "far":
             args.roi_valid_ratio_min = 0.08
             args.roi_p10_weight = 0.55
             args.roi_min_weight = 0.12
             args.filter_window = 3
             args.ema_alpha = 0.25
             args.max_jump = 1.80
+        else:
+            raise ValueError(f"Unsupported ROI tune preset: {preset}")
+
+        # Rebuild temporal filter so window/jump/EMA changes take effect immediately.
+        distance_filter = DistanceFilter(
+            TemporalFilterConfig(
+                ema_alpha=float(args.ema_alpha),
+                max_jump_m=float(args.max_jump),
+                window=int(args.filter_window),
+            )
+        )
 
         print(
             "[INFO] Applied ROI tuning preset: "
-            f"{roi_tune_preset} -> valid_ratio_min={float(args.roi_valid_ratio_min):.2f}, "
+            f"{preset} -> valid_ratio_min={float(args.roi_valid_ratio_min):.2f}, "
             f"p10_weight={float(args.roi_p10_weight):.2f}, min_weight={float(args.roi_min_weight):.2f}, "
             f"window={int(args.filter_window)}, ema_alpha={float(args.ema_alpha):.2f}, "
             f"max_jump={float(args.max_jump):.2f}"
         )
 
+    # Optional one-shot tuning presets for faster field bring-up.
+    roi_tune_preset = str(getattr(args, "roi_tune_preset", "off"))
     distance_filter = DistanceFilter(
         TemporalFilterConfig(
             ema_alpha=float(args.ema_alpha),
@@ -239,6 +266,8 @@ def main() -> None:
             window=int(args.filter_window),
         )
     )
+    if roi_tune_preset != "off":
+        apply_roi_tune_preset(roi_tune_preset)
 
     runtime_cfg = RuntimeOptimizationConfig(
         scale=scale,
@@ -269,7 +298,7 @@ def main() -> None:
     win = "stereo_distance"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     register_click(win, viz_state)
-    print("[INFO] Keyboard control is captured by the video window. Click the window before pressing 1-4/n/q.")
+    print("[INFO] Keyboard control is captured by the video window. Click the window before pressing 1-4/n/s/z/x/c/v/q.")
 
     perf = PerfStats()
     window_sized = False
@@ -521,6 +550,7 @@ def main() -> None:
                 clipped_by_max_depth=clipped_by_max_depth,
                 distance_raw=distance_raw,
                 roi_gate_note=roi_gate_note,
+                roi_tune_preset=roi_tune_preset,
             )
             t_depth = time.perf_counter()
 
@@ -565,6 +595,14 @@ def main() -> None:
             key = key_raw & 0xFF
             if key == ord("s"):
                 swap_lr = not swap_lr
+            if key == ord("z"):
+                apply_roi_tune_preset("near")
+            if key == ord("x"):
+                apply_roi_tune_preset("mid")
+            if key == ord("c"):
+                apply_roi_tune_preset("far")
+            if key == ord("v"):
+                apply_roi_tune_preset("off")
 
             if multi_mode:
                 req_idx = decode_switch_index(key_raw, len(device_list))
