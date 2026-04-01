@@ -169,6 +169,15 @@ def parse_args() -> argparse.Namespace:
         help="Extra blend weight for minimum depth after P10/median fusion",
     )
     parser.add_argument(
+        "--roi-tune-preset",
+        choices=["off", "near", "mid", "far"],
+        default="off",
+        help=(
+            "Apply tested presets for ROI distance gating/smoothing. "
+            "off keeps manual values; near/mid/far are field-tuning shortcuts"
+        ),
+    )
+    parser.add_argument(
         "--profile-stages",
         action="store_true",
         help="Print per-stage average latency (capture/rectify/preprocess/disparity/depth/viz)",

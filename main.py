@@ -199,6 +199,39 @@ def main() -> None:
     )
     active_num_disp = effective_num_disp
 
+    # Optional one-shot tuning presets for faster field bring-up.
+    roi_tune_preset = str(getattr(args, "roi_tune_preset", "off"))
+    if roi_tune_preset != "off":
+        if roi_tune_preset == "near":
+            args.roi_valid_ratio_min = 0.25
+            args.roi_p10_weight = 0.80
+            args.roi_min_weight = 0.05
+            args.filter_window = 7
+            args.ema_alpha = 0.45
+            args.max_jump = 0.60
+        elif roi_tune_preset == "mid":
+            args.roi_valid_ratio_min = 0.15
+            args.roi_p10_weight = 0.70
+            args.roi_min_weight = 0.10
+            args.filter_window = 5
+            args.ema_alpha = 0.35
+            args.max_jump = 1.00
+        elif roi_tune_preset == "far":
+            args.roi_valid_ratio_min = 0.08
+            args.roi_p10_weight = 0.55
+            args.roi_min_weight = 0.12
+            args.filter_window = 3
+            args.ema_alpha = 0.25
+            args.max_jump = 1.80
+
+        print(
+            "[INFO] Applied ROI tuning preset: "
+            f"{roi_tune_preset} -> valid_ratio_min={float(args.roi_valid_ratio_min):.2f}, "
+            f"p10_weight={float(args.roi_p10_weight):.2f}, min_weight={float(args.roi_min_weight):.2f}, "
+            f"window={int(args.filter_window)}, ema_alpha={float(args.ema_alpha):.2f}, "
+            f"max_jump={float(args.max_jump):.2f}"
+        )
+
     distance_filter = DistanceFilter(
         TemporalFilterConfig(
             ema_alpha=float(args.ema_alpha),

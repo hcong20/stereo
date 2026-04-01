@@ -109,6 +109,25 @@ python3 main.py \
   --scale 1.0
 ```
 
+ROI distance tuning presets (fast field setup):
+
+```bash
+# near: stricter quality gate, stronger smoothing
+python3 main.py --roi-tune-preset near
+
+# mid: balanced defaults for general scenes
+python3 main.py --roi-tune-preset mid
+
+# far: looser gate, faster response for sparse/long-range ROI
+python3 main.py --roi-tune-preset far
+```
+
+Manual override still works and takes effect after preset selection:
+
+```bash
+python3 main.py --roi-tune-preset mid --roi-valid-ratio-min 0.20 --ema-alpha 0.40
+```
+
 Default capture backend is OpenCV V4L2. To enable GStreamer backend:
 
 ```bash
