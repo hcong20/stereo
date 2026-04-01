@@ -179,3 +179,62 @@ def request_switch(
         "to_idx": int(active_applied),
         "t0": float(t_sw),
     }
+
+
+def capture_active_frame_and_finalize(
+    *,
+    cam: Any,
+    multi_mode: bool,
+    state: SwitchRuntimeState,
+) -> tuple[np.ndarray, np.ndarray, float, int, float]:
+    """Read active frame, refresh switch snapshot, and finalize pending transitions."""
+    try:
+        left, right, frame_ts, active_idx = read_active_frame(
+            cam=cam,
+            multi_mode=multi_mode,
+            state=state,
+        )
+        state.last_good_frame = (left, right, frame_ts, active_idx)
+        update_switch_breakdown_snapshot(multi_mode, cam, state)
+    except RuntimeError:
+        recovered = recover_frame_after_read_error(
+            cam=cam,
+            state=state,
+        )
+        if recovered is None:
+            raise
+        left, right, frame_ts, active_idx = recovered
+
+    t_capture = time.perf_counter()
+    finalize_pending_switch(
+        cam=cam,
+        multi_mode=multi_mode,
+        state=state,
+        active_idx=active_idx,
+        frame_ts=frame_ts,
+    )
+    return left, right, frame_ts, active_idx, t_capture
+
+
+def get_preview_pair_for_active_frame(
+    *,
+    cam: Any,
+    multi_mode: bool,
+    preview_nv12_bgr: bool,
+    active_idx: int,
+    frame_ts: float,
+) -> Optional[tuple[Any, Any]]:
+    """Get optional preview pair aligned to the active frame timestamp."""
+    if not preview_nv12_bgr:
+        return None
+
+    if multi_mode and hasattr(cam, "get_latest_preview"):
+        preview_packet = cam.get_latest_preview(active_idx)
+        if preview_packet is not None:
+            p_left, p_right, p_ts, _, p_idx = preview_packet
+            if int(p_idx) == int(active_idx) and abs(float(p_ts) - float(frame_ts)) <= 0.2:
+                return (p_left, p_right)
+    elif hasattr(cam, "get_last_preview_pair"):
+        return cam.get_last_preview_pair()
+
+    return None

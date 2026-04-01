@@ -1,12 +1,13 @@
 """Runtime visualization builders for the stereo main loop."""
 
 import time
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 
 from stereo_vision.roi import ROI
+from stereo_vision.rectification import rectify_pair
 from stereo_vision.visualization import colorize_disparity, draw_roi, draw_text
 
 
@@ -152,3 +153,79 @@ def apply_click_probe_overlay(
     if click_depth is not None:
         return draw_text(left_viz, f"Click({cx},{cy}): {click_depth * 1000.0:.1f} mm", (10, 300), (255, 200, 0))
     return draw_text(left_viz, f"Click({cx},{cy}): N/A", (10, 300), (0, 0, 255))
+
+
+def compose_runtime_visualization(
+    *,
+    left_rect: np.ndarray,
+    preview_pair_raw: Optional[Tuple[np.ndarray, np.ndarray]],
+    rect: Any,
+    preview_nv12_warned: bool,
+    disparity: np.ndarray,
+    roi_scaled: ROI,
+    min_disp: float,
+    max_disp: float,
+    distance_filtered: Optional[float],
+    fps: float,
+    latency_ms: float,
+    active_idx: int,
+    device_list: Sequence[str],
+    switch_state: Any,
+    valid_pixels: int,
+    total_pixels: int,
+    valid_ratio: float,
+    positive_disp_pixels: int,
+    clipped_by_max_depth: int,
+    distance_raw: Optional[float],
+    roi_gate_note: Optional[str],
+    roi_tune_preset: str,
+    runtime_note_text: Optional[str],
+    runtime_note_until: float,
+) -> Tuple[np.ndarray, np.ndarray, bool]:
+    """Build left/disparity visualization layers for display."""
+    left_viz_source = left_rect
+    if preview_pair_raw is not None:
+        try:
+            preview_left_raw, preview_right_raw = preview_pair_raw
+            left_preview_rect, _ = rectify_pair(preview_left_raw, preview_right_raw, rect)
+            target_h, target_w = left_rect.shape[:2]
+            if left_preview_rect.shape[:2] != (target_h, target_w):
+                left_preview_rect = cv2.resize(
+                    left_preview_rect,
+                    (target_w, target_h),
+                    interpolation=cv2.INTER_AREA,
+                )
+            left_viz_source = left_preview_rect
+        except Exception as exc:
+            if not preview_nv12_warned:
+                print(
+                    "[WARN] Preview-only NV12->BGR conversion failed; "
+                    f"continuing with grayscale preview: {exc}"
+                )
+                preview_nv12_warned = True
+
+    left_viz, disp_vis = build_viz_layers(
+        left_rect=left_viz_source,
+        disparity=disparity,
+        roi_scaled=roi_scaled,
+        min_disp=float(min_disp),
+        max_disp=float(max_disp),
+        distance_filtered=distance_filtered,
+        fps=fps,
+        latency_ms=latency_ms,
+        active_idx=active_idx,
+        device_list=device_list,
+        last_switch_latency_ms=switch_state.last_switch_latency_ms,
+        switch_pending=switch_state.pending,
+        last_switch_breakdown=switch_state.last_switch_breakdown,
+        valid_pixels=valid_pixels,
+        total_pixels=total_pixels,
+        valid_ratio=valid_ratio,
+        positive_disp_pixels=positive_disp_pixels,
+        clipped_by_max_depth=clipped_by_max_depth,
+        distance_raw=distance_raw,
+        roi_gate_note=roi_gate_note,
+        roi_tune_preset=roi_tune_preset,
+        runtime_note=(runtime_note_text if time.perf_counter() < runtime_note_until else None),
+    )
+    return left_viz, disp_vis, preview_nv12_warned
