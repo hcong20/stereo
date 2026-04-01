@@ -6,7 +6,14 @@ from typing import Optional
 
 @dataclass
 class StageProfiler:
-    """Accumulate and periodically report per-stage latencies in milliseconds."""
+    """Accumulate and periodically report per-stage latencies in milliseconds.
+
+    Attributes:
+        enabled: Whether profiling accumulation/reporting is active.
+        interval: Number of frames between profile reports.
+        _acc: Running latency sums (ms) for each profiled stage.
+        _count: Number of frames accumulated in the current report window.
+    """
 
     enabled: bool = False
     interval: int = 60
@@ -33,7 +40,20 @@ class StageProfiler:
         t_depth: float,
         t_viz: float,
     ) -> Optional[str]:
-        """Record one frame and return a profile line when report interval is reached."""
+        """Record one frame and optionally emit an averaged profile line.
+
+        Args:
+            t0: Frame-start timestamp.
+            t_capture: Timestamp after capture stage.
+            t_rectify: Timestamp after rectification stage.
+            t_preprocess: Timestamp after preprocess stage.
+            t_disparity: Timestamp after disparity stage.
+            t_depth: Timestamp after depth/ROI metrics stage.
+            t_viz: Timestamp after visualization stage.
+
+        Returns:
+            Profile summary string when frame interval is reached, else ``None``.
+        """
         if not self.enabled:
             return None
 
@@ -46,6 +66,7 @@ class StageProfiler:
         self._acc["total"] += (t_viz - t0) * 1000.0
         self._count += 1
 
+        # Emit only after enough frames are accumulated.
         interval = max(1, int(self.interval))
         if self._count < interval:
             return None
@@ -61,6 +82,7 @@ class StageProfiler:
             f"viz={self._acc['viz'] / c:.2f} "
             f"total={self._acc['total'] / c:.2f}"
         )
+        # Reset accumulation window after producing one averaged report line.
         for key in self._acc:
             self._acc[key] = 0.0
         self._count = 0

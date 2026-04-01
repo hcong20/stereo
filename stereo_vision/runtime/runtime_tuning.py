@@ -11,7 +11,16 @@ class RoiTuneController:
     """Keeps ROI tuning state and rebuilds temporal filter on preset changes."""
 
     def __init__(self, args: Namespace) -> None:
+        """Capture manual ROI/filter settings and initialize active preset state.
+
+        Args:
+            args: Mutable CLI args namespace storing runtime-tunable parameters.
+
+        Returns:
+            None.
+        """
         self.args = args
+        # Persist manual values so preset "off" can restore user-defined tuning.
         self.manual_roi_valid_ratio_min = float(args.roi_valid_ratio_min)
         self.manual_roi_p10_weight = float(args.roi_p10_weight)
         self.manual_roi_min_weight = float(args.roi_min_weight)
@@ -23,6 +32,11 @@ class RoiTuneController:
         self.distance_filter = self._build_filter()
 
     def _build_filter(self) -> DistanceFilter:
+        """Build temporal distance filter from current args values.
+
+        Returns:
+            DistanceFilter configured with current EMA/jump/window settings.
+        """
         return DistanceFilter(
             TemporalFilterConfig(
                 ema_alpha=float(self.args.ema_alpha),
@@ -32,8 +46,17 @@ class RoiTuneController:
         )
 
     def apply_preset(self, preset: str) -> None:
+        """Apply named ROI tuning preset and rebuild filter state.
+
+        Args:
+            preset: Preset name in {"off", "near", "mid", "far"}.
+
+        Returns:
+            None.
+        """
         self.roi_tune_preset = preset
 
+        # Presets update both ROI gating and temporal smoothing parameters.
         if preset == "off":
             self.args.roi_valid_ratio_min = self.manual_roi_valid_ratio_min
             self.args.roi_p10_weight = self.manual_roi_p10_weight

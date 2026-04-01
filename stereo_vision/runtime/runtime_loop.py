@@ -39,7 +39,32 @@ from stereo_vision.ui.visualization import VizState, register_click
 
 @dataclass(frozen=True)
 class RuntimeLoopConfig:
-    """Immutable runtime loop dependencies assembled at startup."""
+    """Immutable runtime loop dependencies assembled at startup.
+
+    Attributes:
+        cam: Camera manager/capture backend used by the runtime loop.
+        multi_mode: Whether multi-input switching mode is enabled.
+        switch_timeout_s: Timeout waiting for first frame after input switch.
+        active_idx: Initial active input index (0-based).
+        rect: Stereo rectification model/parameters.
+        runtime_cfg: Runtime optimization toggles (scale, ROI mode, etc.).
+        preprocessor: Frame preprocessor (resize/grayscale pipeline).
+        depth_estimator: Converts disparity to metric depth.
+        disp_estimator: Stereo matcher used to compute disparity.
+        requested_num_disp: Requested disparity search range from CLI.
+        effective_num_disp: Adjusted/safe disparity search range in use.
+        baseline_m: Camera baseline in meters.
+        focal_px: Effective focal length in pixels.
+        roi: Base ROI definition in processed-frame coordinates.
+        roi_phys_w_m: Physical ROI width in meters.
+        roi_phys_h_m: Physical ROI height in meters.
+        roi_center_mode: Physical ROI centering policy.
+        roi_depth_ref_m: Depth reference for physical ROI projection.
+        device_list: Ordered list of configured capture device paths.
+        roi_tuning: Runtime ROI tuning/filter controller.
+        preview_nv12_bgr: Whether preview path should request BGR from NV12.
+        profiler: Optional stage timing profiler used each frame.
+    """
 
     cam: Any
     multi_mode: bool
@@ -70,7 +95,15 @@ def run_runtime_loop(
     args: Namespace,
     cfg: RuntimeLoopConfig,
 ) -> None:
-    """Run the per-frame processing loop until quit."""
+    """Run the per-frame processing loop until quit.
+
+    Args:
+        args: Parsed CLI/runtime arguments controlling processing and UI behavior.
+        cfg: Prebuilt immutable runtime dependencies and calibration values.
+
+    Returns:
+        None. The function runs until user exit and updates UI in real time.
+    """
     cam = cfg.cam
     multi_mode = cfg.multi_mode
     switch_timeout_s = cfg.switch_timeout_s
@@ -114,6 +147,7 @@ def run_runtime_loop(
         switch_timeout_s=switch_timeout_s,
     )
 
+    # Main real-time loop: capture -> rectify -> preprocess -> disparity -> depth -> visualize.
     while True:
         t0 = time.perf_counter()
         # 1) Capture and optional channel swap.
@@ -140,14 +174,15 @@ def run_runtime_loop(
             if preview_pair_raw is not None:
                 preview_pair_raw = (preview_pair_raw[1], preview_pair_raw[0])
 
-        # 2) Geometric rectification.
+        # 2) Geometric rectification: align epipolar lines for valid stereo matching.
         left_rect, right_rect = rectify_pair(left, right, rect)
         t_rectify = time.perf_counter()
 
-        # 3) Runtime preprocess (resize + grayscale).
+        # 3) Runtime preprocess (resize + grayscale) to match disparity input expectations.
         left_rect, right_rect, gray_l, gray_r = preprocessor.process(left_rect, right_rect)
         t_preprocess = time.perf_counter()
 
+        # Derive frame-valid ROI (optionally projected from physical-size target window).
         roi_scaled = compute_runtime_roi(
             gray_shape=gray_l.shape[:2],
             roi=roi,
@@ -159,7 +194,7 @@ def run_runtime_loop(
             focal_px=focal_px,
         )
 
-        # 4) Disparity either on full frame or constrained ROI.
+        # 4) Disparity estimation either on full frame or ROI-constrained mode.
         disparity, disp_estimator, _ = compute_disparity(
             gray_l=gray_l,
             gray_r=gray_r,
@@ -171,7 +206,7 @@ def run_runtime_loop(
         )
         t_disparity = time.perf_counter()
 
-        # 5) Convert disparity to metric depth and gather ROI stats.
+        # 5) Convert disparity to metric depth and gather ROI quality/readout metrics.
         (
             depth_map,
             valid_pixels,
@@ -192,6 +227,7 @@ def run_runtime_loop(
             roi_tuning=roi_tuning,
         )
 
+        # Update ROI depth reference so physical ROI projection tracks the observed target depth.
         if distance_filtered is not None and np.isfinite(distance_filtered) and distance_filtered > 0:
             roi_depth_ref_m = float(distance_filtered)
         elif distance_raw is not None and np.isfinite(distance_raw) and distance_raw > 0:
@@ -253,6 +289,7 @@ def run_runtime_loop(
         cv2.imshow(win, stack)
         t_viz = time.perf_counter()
 
+        # Persist per-stage timings and emit a periodic profile line when enabled.
         profile_line = profiler.record(
             t0=t0,
             t_capture=t_capture,
@@ -265,6 +302,7 @@ def run_runtime_loop(
         if profile_line is not None:
             print(profile_line)
 
+        # Handle keyboard controls for source switching, presets, and shutdown.
         key_raw = cv2.waitKeyEx(1)
         swap_lr, key_note_text, key_note_until, should_exit = process_runtime_key_events(
             key_raw=key_raw,

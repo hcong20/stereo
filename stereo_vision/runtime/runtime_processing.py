@@ -26,8 +26,23 @@ def compute_runtime_roi(
     roi_depth_ref_m: float,
     focal_px: float,
 ) -> ROI:
-    """Project the physical ROI onto the current processed frame."""
+    """Compute the frame-valid ROI used by runtime disparity/depth stages.
+
+    Args:
+        gray_shape: Processed grayscale frame shape as (height, width).
+        roi: Base/static ROI configured in processed-frame coordinates.
+        runtime_cfg: Runtime optimization flags (including ROI-only disparity mode).
+        roi_center_mode: ROI anchor policy: image center or static ROI center.
+        roi_phys_w_m: Target physical ROI width in meters.
+        roi_phys_h_m: Target physical ROI height in meters.
+        roi_depth_ref_m: Current depth reference for physical-size projection.
+        focal_px: Effective focal length in pixels.
+
+    Returns:
+        ROI projected/clamped to current frame, ready for downstream processing.
+    """
     gray_h, gray_w = gray_shape
+    # Scale static ROI with runtime resize factor and clamp to frame bounds.
     roi_scaled_static = ROI(
         x=int(roi.x * runtime_cfg.scale),
         y=int(roi.y * runtime_cfg.scale),
@@ -35,6 +50,7 @@ def compute_runtime_roi(
         h=int(roi.h * runtime_cfg.scale),
     ).clamp(gray_w, gray_h)
 
+    # Choose projection center from configured policy.
     if roi_center_mode == "image-center":
         center_x = gray_w // 2
         center_y = gray_h // 2
@@ -42,6 +58,7 @@ def compute_runtime_roi(
         center_x = roi_scaled_static.x + (roi_scaled_static.w // 2)
         center_y = roi_scaled_static.y + (roi_scaled_static.h // 2)
 
+    # Convert physical window size (meters) into pixel ROI at current depth reference.
     roi_scaled = roi_from_physical_size(
         img_w=gray_w,
         img_h=gray_h,
@@ -53,6 +70,7 @@ def compute_runtime_roi(
         fx=focal_px,
     )
 
+    # Ensure minimum ROI width required by SGBM ROI-only path.
     if runtime_cfg.disparity_roi_only and roi_scaled.w < 32:
         # Keep SGBM ROI mode valid even when physical projection gets too narrow.
         expand = 32 - roi_scaled.w
@@ -76,13 +94,30 @@ def compute_disparity(
     requested_num_disp: int,
     disp_estimator: StereoDisparityEstimator,
 ) -> tuple[np.ndarray, StereoDisparityEstimator, int]:
-    """Compute disparity on full frame or constrained ROI depending on runtime mode."""
+    """Compute disparity in full-frame or ROI-only mode.
+
+    Args:
+        gray_l: Left grayscale frame.
+        gray_r: Right grayscale frame.
+        roi_scaled: Active ROI in current processed-frame coordinates.
+        runtime_cfg: Runtime optimization flags.
+        args: Parsed runtime arguments with SGBM-related parameters.
+        requested_num_disp: Requested disparity search range from CLI.
+        disp_estimator: Current stereo disparity estimator instance.
+
+    Returns:
+        Tuple ``(disparity, disp_estimator, active_num_disp)`` where:
+        - ``disparity``: Full-frame disparity map.
+        - ``disp_estimator``: Potentially rebuilt estimator with safe settings.
+        - ``active_num_disp``: Effective number of disparities used this frame.
+    """
     # Current estimator stores parameters on `cfg`; keep a fallback for older variants.
     estimator_cfg = getattr(disp_estimator, "cfg", getattr(disp_estimator, "config", None))
     if estimator_cfg is None:
         raise AttributeError("StereoDisparityEstimator must expose cfg/config with num_disparities")
     active_num_disp = int(estimator_cfg.num_disparities)
 
+    # Full-frame path: guard against invalid num-disparities for current frame width.
     if not runtime_cfg.disparity_roi_only:
         max_safe_full = ((max(0, int(gray_l.shape[1])) // 16) - 1) * 16
         if max_safe_full >= 16 and active_num_disp > max_safe_full:
@@ -106,6 +141,7 @@ def compute_disparity(
                 f"for width={gray_l.shape[1]}"
             )
 
+    # ROI-only path: adapt num-disparities to ROI width and write crop result back.
     if runtime_cfg.disparity_roi_only:
         target_num_disp = safe_num_disparities_for_roi(requested_num_disp, roi_scaled.w)
         if target_num_disp != active_num_disp:
@@ -160,7 +196,22 @@ def compute_depth_and_distance(
     float | None,
     str | None,
 ]:
-    """Compute depth map, ROI metrics, and filtered distance."""
+    """Compute depth map, ROI quality metrics, and distance readouts.
+
+    Args:
+        disparity: Full-frame disparity map for current frame.
+        depth_estimator: Converts disparity values to metric depth.
+        roi_scaled: Active ROI for metric aggregation.
+        args: Parsed runtime arguments with gating/filter parameters.
+        focal_px: Effective focal length in pixels.
+        baseline_m: Stereo baseline in meters.
+        roi_tuning: Runtime ROI tuning/filter controller.
+
+    Returns:
+        Tuple containing:
+        ``(depth_map, valid_pixels, total_pixels, valid_ratio, positive_disp_pixels,
+        clipped_by_max_depth, distance_raw, distance_filtered, roi_gate_note)``.
+    """
     depth_map = depth_estimator.disparity_to_depth(disparity)
     ys, xs = roi_scaled.as_slice()
     roi_disp = disparity[ys, xs]
@@ -173,6 +224,7 @@ def compute_depth_and_distance(
     min_valid_pixels = max(1, int(args.min_valid_pixels))
     min_valid_ratio = max(0.0, float(args.roi_valid_ratio_min))
 
+    # Build gate note when depth evidence inside ROI is insufficient.
     roi_gate_note = None
     if valid_pixels < min_valid_pixels:
         roi_gate_note = f"gate: valid pixels {valid_pixels} < {min_valid_pixels}"
@@ -181,6 +233,7 @@ def compute_depth_and_distance(
             f"gate: valid ratio {valid_ratio * 100.0:.1f}% < {min_valid_ratio * 100.0:.1f}%"
         )
 
+    # Count pixels clipped by max-depth by comparing raw-vs-filtered depth validity.
     roi_depth_raw = np.full(roi_disp.shape, np.nan, dtype=np.float32)
     raw_valid = roi_disp > max(0.01, float(args.depth_min_disp))
     roi_depth_raw[raw_valid] = (focal_px * baseline_m) / roi_disp[raw_valid]
@@ -190,6 +243,7 @@ def compute_depth_and_distance(
             np.isfinite(roi_depth_raw).sum() - np.isfinite(roi_depth).sum()
         )
 
+    # Raw robust ROI distance, then temporal smoothing for stable UI/control value.
     distance_raw = robust_roi_distance(
         depth_map,
         roi_scaled,

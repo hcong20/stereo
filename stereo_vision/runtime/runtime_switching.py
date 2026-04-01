@@ -11,7 +11,18 @@ from stereo_vision.capture.camera import CameraManger
 
 @dataclass
 class SwitchRuntimeState:
-    """Track switch state, timeout policy, and recent read status."""
+    """Track switch state, timeout policy, and recent read status.
+
+    Attributes:
+        timeout_s: Max allowed switch settle time before timeout fallback.
+        read_timeout_idle_s: Frame read timeout during steady-state operation.
+        read_timeout_switch_s: Frame read timeout while a switch is pending.
+        fallback_max_age_s: Max age for fallback frames when allowed.
+        pending: Optional pending switch payload with from/to/t0 fields.
+        last_good_frame: Last successfully captured frame tuple.
+        last_switch_latency_ms: Most recent completed switch latency in ms.
+        last_switch_breakdown: Optional backend timing segments for last switch.
+    """
 
     timeout_s: float
     read_timeout_idle_s: float
@@ -28,7 +39,16 @@ def configure_switch_runtime_state(
     cam: Any,
     switch_timeout_s: float,
 ) -> SwitchRuntimeState:
-    """Build runtime switch config and apply single-active timeout safety policy."""
+    """Build runtime switch state with mode-aware timeout settings.
+
+    Args:
+        multi_mode: Whether multi-input switching mode is enabled.
+        cam: Camera backend instance.
+        switch_timeout_s: User-configured switch timeout.
+
+    Returns:
+        Initialized ``SwitchRuntimeState`` with bounded read/fallback timeouts.
+    """
     timeout_s = float(switch_timeout_s)
     if multi_mode and isinstance(cam, CameraManger) and cam.single_active_mode and timeout_s < 3.0:
         print(
@@ -50,7 +70,16 @@ def read_active_frame(
     multi_mode: bool,
     state: SwitchRuntimeState,
 ) -> tuple[np.ndarray, np.ndarray, float, int]:
-    """Read active frame and source index with switch-aware timeout policy."""
+    """Read current active frame with switch-aware read constraints.
+
+    Args:
+        cam: Camera backend instance.
+        multi_mode: Whether multi-input switching mode is enabled.
+        state: Runtime switching state.
+
+    Returns:
+        Tuple ``(left, right, timestamp_s, active_idx)``.
+    """
     if multi_mode:
         min_ts = 0.0
         timeout = state.read_timeout_idle_s
@@ -74,7 +103,16 @@ def read_active_frame(
 
 
 def update_switch_breakdown_snapshot(multi_mode: bool, cam: Any, state: SwitchRuntimeState) -> None:
-    """Pull latest switch breakdown from camera backend if available."""
+    """Refresh cached switch timing breakdown from backend.
+
+    Args:
+        multi_mode: Whether multi-input switching mode is enabled.
+        cam: Camera backend instance.
+        state: Runtime switching state to update.
+
+    Returns:
+        None.
+    """
     if multi_mode and isinstance(cam, CameraManger):
         breakdown = cam.get_last_switch_breakdown()
         if breakdown is not None:
@@ -85,7 +123,15 @@ def recover_frame_after_read_error(
     cam: Any,
     state: SwitchRuntimeState,
 ) -> Optional[tuple[np.ndarray, np.ndarray, float, int]]:
-    """Handle read error path and optionally return last known good frame."""
+    """Handle read failure and return fallback frame when possible.
+
+    Args:
+        cam: Camera backend instance.
+        state: Runtime switching state.
+
+    Returns:
+        Last known good frame tuple, or ``None`` when no fallback exists.
+    """
     if state.pending is not None:
         pending_idx = int(state.pending["to_idx"])
         pending_t0 = float(state.pending["t0"])
@@ -113,7 +159,18 @@ def finalize_pending_switch(
     active_idx: int,
     frame_ts: float,
 ) -> None:
-    """Finalize or timeout a pending switch based on latest captured frame."""
+    """Finalize a pending switch or mark timeout based on fresh frame info.
+
+    Args:
+        cam: Camera backend instance.
+        multi_mode: Whether multi-input switching mode is enabled.
+        state: Runtime switching state.
+        active_idx: Active index of latest captured frame.
+        frame_ts: Timestamp of latest captured frame.
+
+    Returns:
+        None.
+    """
     if state.pending is None:
         return
 
@@ -167,7 +224,17 @@ def request_switch(
     to_idx: int,
     key_label: str,
 ) -> dict:
-    """Issue switch request and return pending switch state payload."""
+    """Request camera source switch and build pending-switch payload.
+
+    Args:
+        cam: Camera backend instance.
+        from_idx: Previously active source index.
+        to_idx: Requested target source index.
+        key_label: User action label that triggered the switch.
+
+    Returns:
+        Pending switch payload with ``from_idx``, ``to_idx``, and start timestamp.
+    """
     active_applied = cam.switch_to(to_idx)
     t_sw = time.perf_counter()
     print(
@@ -187,7 +254,16 @@ def capture_active_frame_and_finalize(
     multi_mode: bool,
     state: SwitchRuntimeState,
 ) -> tuple[np.ndarray, np.ndarray, float, int, float]:
-    """Read active frame, refresh switch snapshot, and finalize pending transitions."""
+    """Capture frame, maintain switch state, and return capture timing.
+
+    Args:
+        cam: Camera backend instance.
+        multi_mode: Whether multi-input switching mode is enabled.
+        state: Runtime switching state.
+
+    Returns:
+        Tuple ``(left, right, frame_ts, active_idx, t_capture)``.
+    """
     try:
         left, right, frame_ts, active_idx = read_active_frame(
             cam=cam,
@@ -224,7 +300,18 @@ def get_preview_pair_for_active_frame(
     active_idx: int,
     frame_ts: float,
 ) -> Optional[tuple[Any, Any]]:
-    """Get optional preview pair aligned to the active frame timestamp."""
+    """Get optional preview pair aligned with current active frame.
+
+    Args:
+        cam: Camera backend instance.
+        multi_mode: Whether multi-input switching mode is enabled.
+        preview_nv12_bgr: Whether preview conversion path is enabled.
+        active_idx: Active source index for current frame.
+        frame_ts: Timestamp of current main processing frame.
+
+    Returns:
+        ``(left_preview, right_preview)`` when available and aligned, else ``None``.
+    """
     if not preview_nv12_bgr:
         return None
 
