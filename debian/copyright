@@ -1,0 +1,11 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: stereo
+Source: local repository snapshot
+
+Files: *
+Copyright: 2026 The stereo project authors
+License: unknown
+ The upstream repository does not include an explicit license file.
+ .
+ This packaging is intended for local or internal use until the license is
+ clarified upstream.

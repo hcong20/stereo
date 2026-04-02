@@ -5,15 +5,31 @@ set -euo pipefail
 # Usage:
 #   ./build.sh            # build onefile binary
 #   ./build.sh onedir     # build onedir bundle (faster startup)
+#   ./build.sh deb        # build a Debian .deb package
 
 MODE="${1:-onefile}"
-if [[ "$MODE" != "onefile" && "$MODE" != "onedir" ]]; then
+if [[ "$MODE" != "onefile" && "$MODE" != "onedir" && "$MODE" != "deb" ]]; then
   echo "Invalid mode: $MODE"
-  echo "Usage: ./build.sh [onefile|onedir]"
+  echo "Usage: ./build.sh [onefile|onedir|deb]"
   exit 1
 fi
 
 APP_NAME="stereo_app"
+
+if [[ "$MODE" == "deb" ]]; then
+  if ! command -v dpkg-buildpackage >/dev/null 2>&1; then
+    echo "[ERROR] dpkg-buildpackage is not installed."
+    echo "[ERROR] Install dpkg-dev and debhelper first, then rerun ./build.sh deb"
+    exit 1
+  fi
+
+  dpkg-buildpackage -us -uc -b
+
+  echo "Debian package build complete."
+  echo "- Package: ../stereo-app_*_all.deb"
+  exit 0
+fi
+
 VENV_DIR=".venv"
 USE_VENV=1
 

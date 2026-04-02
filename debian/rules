@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	:
+
+override_dh_auto_install:
+	install -d debian/stereo-app/usr/share/stereo-app
+	install -m 0644 main.py debian/stereo-app/usr/share/stereo-app/main.py
+	cp -a stereo_vision debian/stereo-app/usr/share/stereo-app/
+	install -m 0644 stereo_calib_params.npz debian/stereo-app/usr/share/stereo-app/stereo_calib_params.npz
+	find debian/stereo-app/usr/share/stereo-app/stereo_vision -type d -name '__pycache__' -exec rm -rf {} +
+	find debian/stereo-app/usr/share/stereo-app/stereo_vision -type f -name '*.pyc' -delete
+	install -d debian/stereo-app/usr/bin
+	printf '%s\n' '#!/bin/sh' 'exec /usr/bin/python3 /usr/share/stereo-app/main.py --calib /usr/share/stereo-app/stereo_calib_params.npz "$$@"' > debian/stereo-app/usr/bin/stereo-app
+	chmod 0755 debian/stereo-app/usr/bin/stereo-app

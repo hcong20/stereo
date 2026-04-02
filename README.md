@@ -96,6 +96,18 @@ Optional: build a folder bundle with faster startup:
 ./build.sh onedir
 ```
 
+To build a Debian installer instead of a standalone binary:
+
+```bash
+./build.sh deb
+```
+
+This produces a `.deb` package in the parent directory. Install it with:
+
+```bash
+sudo apt install ./stereo-app_*_all.deb
+```
+
 Useful flags:
 
 ```bash
