@@ -8,7 +8,8 @@ USER_NAME="linaro"
 WORK_DIR="/home/linaro"
 LOCAL_BIN="/home/linaro/stereo_app"
 PKG_BIN="/usr/bin/stereo-app"
-DEFAULT_ARGS="--gstreamer"
+# Headless service mode: keep processing/logging active without GTK window init.
+DEFAULT_ARGS="--gstreamer --no-display --log-measurements --crop-height-ratio 1.0"
 CAMERA_DEVICE="/dev/video20"
 CAMERA_WAIT_RETRIES=10
 
@@ -30,7 +31,8 @@ WORK_DIR="/home/linaro"
 LOG_DIR="${WORK_DIR}/logs"
 LOCAL_BIN="/home/linaro/stereo_app"
 PKG_BIN="/usr/bin/stereo-app"
-DEFAULT_ARGS="--gstreamer"
+# Match default service runtime flags from deploy configuration above.
+DEFAULT_ARGS="--gstreamer --no-display --log-measurements --crop-height-ratio 1.0"
 CAMERA_DEVICE="/dev/video20"
 CAMERA_WAIT_RETRIES=10
 
@@ -56,7 +58,9 @@ else
 fi
 
 echo "[$(date)] Starting ${APP_BIN} ${DEFAULT_ARGS}" | tee -a "${LOG_DIR}/runtime.log"
-exec "${APP_BIN}" ${DEFAULT_ARGS} >> "${LOG_DIR}/runtime.log" 2>&1
+# Mirror app output to both runtime.log and the systemd journal.
+"${APP_BIN}" ${DEFAULT_ARGS} 2>&1 | tee -a "${LOG_DIR}/runtime.log"
+exit ${PIPESTATUS[0]}
 EOF
 
 chmod +x "${WRAPPER_SCRIPT}"
@@ -71,14 +75,27 @@ After=network.target systemd-udev-settle.service
 [Service]
 Type=simple
 User=${USER_NAME}
+Group=video
 WorkingDirectory=${WORK_DIR}
 ExecStartPre=/bin/sleep 2
 ExecStart=${WRAPPER_SCRIPT}
+
+# Match interactive shell runtime for codec and display-dependent libraries.
+Environment=LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DISPLAY=:0
+
+# Allow direct access to video/render/input nodes used by capture/decode stack.
+SupplementaryGroups=video render input
+PrivateDevices=no
+
 Restart=always
 RestartSec=2
 StartLimitInterval=0
+
 MemoryMax=2G
 CPUQuota=300%
+
 StandardOutput=journal
 StandardError=journal
 
