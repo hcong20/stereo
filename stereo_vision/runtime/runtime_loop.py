@@ -227,11 +227,13 @@ def run_runtime_loop(
             roi_tuning=roi_tuning,
         )
 
-        # Update ROI depth reference so physical ROI projection tracks the observed target depth.
-        if distance_filtered is not None and np.isfinite(distance_filtered) and distance_filtered > 0:
-            roi_depth_ref_m = float(distance_filtered)
-        elif distance_raw is not None and np.isfinite(distance_raw) and distance_raw > 0:
+        # Update ROI projection depth from the current-frame robust estimate first.
+        # The filtered value is kept for display, but using it here can freeze ROI
+        # size when the filter rejects a real scene change as a jump.
+        if distance_raw is not None and np.isfinite(distance_raw) and distance_raw > 0:
             roi_depth_ref_m = float(distance_raw)
+        elif distance_filtered is not None and np.isfinite(distance_filtered) and distance_filtered > 0:
+            roi_depth_ref_m = float(distance_filtered)
 
         fps = perf.update_fps()
         latency_ms = (time.perf_counter() - t0) * 1000.0
