@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import os
 import sys
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Any
 
 # -------------------------------
 # Parameters
@@ -30,38 +30,231 @@ objp *= square_size
 # -------------------------------
 # Helper functions
 # -------------------------------
+def build_capture_plan() -> List[Dict[str, Any]]:
+    """Create a 25-step plan: near/mid each have 5 frontal + 5 tilted, far has 5 frontal."""
+    plan: List[Dict[str, Any]] = []
+
+    # These five locations define the frontal coverage: four corners plus center.
+    # Corner/center points are reserved for fronto-parallel captures.
+    fronto_points = [
+        ("top-left", 0.20, 0.20),
+        ("top-right", 0.80, 0.20),
+        ("bottom-left", 0.20, 0.80),
+        ("bottom-right", 0.80, 0.80),
+        ("center", 0.50, 0.50),
+    ]
+
+    # Tilt captures use the cardinal directions so the on-screen shape can match the pose.
+    tilt_points = [
+        ("top", 0.50, 0.20, "down"),
+        ("bottom", 0.50, 0.80, "up"),
+        ("right", 0.80, 0.50, "left"),
+        ("left", 0.20, 0.50, "right"),
+        ("center", 0.50, 0.50, "roll"),
+    ]
+
+    def add_group(distance: str, include_tilt: bool) -> None:
+        size = {"near": "large", "mid": "medium", "far": "small"}[distance]
+        for target_name, x_ratio, y_ratio in fronto_points:
+            plan.append(
+                {
+                    "distance": distance,
+                    "size": size,
+                    "orientation": "fronto-parallel",
+                    "target": target_name,
+                    "x_ratio": x_ratio,
+                    "y_ratio": y_ratio,
+                    "tilt_direction": None,
+                }
+            )
+
+        if include_tilt:
+            for target_name, x_ratio, y_ratio, tilt_direction in tilt_points:
+                plan.append(
+                    {
+                        "distance": distance,
+                        "size": size,
+                        "orientation": "tilt",
+                        "target": target_name,
+                        "x_ratio": x_ratio,
+                        "y_ratio": y_ratio,
+                        "tilt_direction": tilt_direction,
+                    }
+                )
+
+    add_group("near", include_tilt=True)
+    add_group("mid", include_tilt=True)
+    add_group("far", include_tilt=False)
+    return plan
+
+
+def checklist_progress(saved_count: int, capture_plan: List[Dict[str, Any]]) -> Dict[str, bool]:
+    """Return whether each requested checklist category has been covered."""
+    done_items = capture_plan[:saved_count]
+
+    # Track coverage by distance, position, and pose so the overlay can show progress.
+    sizes = {it["size"] for it in done_items}
+    orientations = {it["orientation"] for it in done_items}
+    target_counts: Dict[str, int] = {
+        "top-left": 0,
+        "top-right": 0,
+        "bottom-left": 0,
+        "bottom-right": 0,
+        "center": 0,
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0,
+    }
+    for item in done_items:
+        target_counts[item["target"]] = target_counts.get(item["target"], 0) + 1
+
+    near_count = sum(1 for it in done_items if it["distance"] == "near")
+    mid_count = sum(1 for it in done_items if it["distance"] == "mid")
+    far_count = sum(1 for it in done_items if it["distance"] == "far")
+    near_fronto = sum(1 for it in done_items if it["distance"] == "near" and it["orientation"] == "fronto-parallel")
+    mid_fronto = sum(1 for it in done_items if it["distance"] == "mid" and it["orientation"] == "fronto-parallel")
+    far_fronto = sum(1 for it in done_items if it["distance"] == "far" and it["orientation"] == "fronto-parallel")
+    near_tilt = sum(1 for it in done_items if it["distance"] == "near" and it["orientation"] == "tilt")
+    mid_tilt = sum(1 for it in done_items if it["distance"] == "mid" and it["orientation"] == "tilt")
+
+    return {
+        "distance_ratio": near_count >= 10 and mid_count >= 10 and far_count >= 5,
+        "fov_coverage": target_counts["top-left"] >= 1 and target_counts["top-right"] >= 1 and target_counts["bottom-left"] >= 1 and target_counts["bottom-right"] >= 1 and target_counts["center"] >= 3 and target_counts["top"] >= 2 and target_counts["bottom"] >= 2 and target_counts["left"] >= 2 and target_counts["right"] >= 2,
+        "orientation_coverage": {"fronto-parallel", "tilt"}.issubset(orientations),
+        "scale_coverage": {"large", "small"}.issubset(sizes),
+        "near_mid_far_plan": near_fronto >= 5 and near_tilt >= 5 and mid_fronto >= 5 and mid_tilt >= 5 and far_fronto >= 5,
+    }
+
+
 def draw_capture_guides(
     image: np.ndarray,
     checkerboard_found: bool,
     saved_count: int,
     target_index: int,
+    target_plan: Dict[str, Any],
+    progress: Dict[str, bool],
+    sync_ok: bool,
     show_grid: bool = True
 ) -> np.ndarray:
     """Draw visual guides to help checkerboard placement during capture."""
     vis = image.copy()
     h, w = vis.shape[:2]
 
-    # 25 target positions (5x5) from top-left to bottom-right.
-    cols, rows = 5, 5
-    tx_idx = int(np.clip(target_index, 0, cols * rows - 1))
-    tx_col = tx_idx % cols
-    tx_row = tx_idx // cols
-    x_positions = np.linspace(0.18, 0.82, cols)
-    y_positions = np.linspace(0.18, 0.82, rows)
-    target_x = int(w * x_positions[tx_col])
-    target_y = int(h * y_positions[tx_row])
+    tx_idx = int(np.clip(target_index, 0, 24))
+    target_x = int(w * float(target_plan["x_ratio"]))
+    target_y = int(h * float(target_plan["y_ratio"]))
 
-    # Target rectangle centered at current target position.
-    rect_w = int(w * 0.32)
-    rect_h = int(h * 0.34)
+    # Box size follows guidance text (near/large -> bigger, far/small -> smaller).
+    size_scale = {"large": 1.40, "medium": 1.00, "small": 0.60}
+    scale = size_scale.get(target_plan["size"], 1.0)
+    rect_w = int(w * 0.32 * scale)
+    rect_h = int(h * 0.34 * scale)
     x1 = int(np.clip(target_x - rect_w // 2, 0, max(0, w - rect_w - 1)))
     y1 = int(np.clip(target_y - rect_h // 2, 0, max(0, h - rect_h - 1)))
-    x2 = min(w - 1, x1 + rect_w)
-    y2 = min(h - 1, y1 + rect_h)
+    cx = x1 + rect_w // 2
+    cy = y1 + rect_h // 2
 
     guide_color = (0, 220, 0) if checkerboard_found else (0, 180, 255)
-    cv2.rectangle(vis, (x1, y1), (x2, y2), guide_color, 2)
-    cv2.circle(vis, (target_x, target_y), 6, guide_color, -1)
+
+    orientation = target_plan["orientation"]
+    if orientation == "fronto-parallel":
+        # Frontal targets stay as rectangles.
+        box = np.array(
+            [
+                [x1, y1],
+                [x1 + rect_w, y1],
+                [x1 + rect_w, y1 + rect_h],
+                [x1, y1 + rect_h],
+            ],
+            dtype=np.int32,
+        )
+    else:
+            # Directional tilt shapes: each one encodes the requested slant in the outline.
+        shrink_x = int(rect_w * 0.26)
+        shrink_y = int(rect_h * 0.26)
+        tilt_direction = target_plan.get("tilt_direction")
+        if tilt_direction == "down":
+            # top wide, bottom narrow
+            box = np.array(
+                [
+                    [x1, y1],
+                    [x1 + rect_w, y1],
+                    [x1 + rect_w - shrink_x, y1 + rect_h],
+                    [x1 + shrink_x, y1 + rect_h],
+                ],
+                dtype=np.int32,
+            )
+        elif tilt_direction == "up":
+            # bottom wide, top narrow
+            box = np.array(
+                [
+                    [x1 + shrink_x, y1],
+                    [x1 + rect_w - shrink_x, y1],
+                    [x1 + rect_w, y1 + rect_h],
+                    [x1, y1 + rect_h],
+                ],
+                dtype=np.int32,
+            )
+        elif tilt_direction == "left":
+            # right wide, left narrow, with the wide side reaching the right edge.
+            box = np.array(
+                [
+                    [x1 + shrink_x, y1 + shrink_y],
+                    [x1 + rect_w, y1],
+                    [x1 + rect_w, y1 + rect_h],
+                    [x1 + shrink_x, y1 + rect_h - shrink_y],
+                ],
+                dtype=np.int32,
+            )
+        elif tilt_direction == "right":
+            # left wide, right narrow, with the wide side reaching the left edge.
+            box = np.array(
+                [
+                    [x1, y1],
+                    [x1 + rect_w - shrink_x, y1 + shrink_y],
+                    [x1 + rect_w - shrink_x, y1 + rect_h - shrink_y],
+                    [x1, y1 + rect_h],
+                ],
+                dtype=np.int32,
+            )
+        else:  # roll
+            # Roll guidance uses a parallelogram (not trapezoid).
+            slant = int(rect_w * 0.18)
+            box = np.array(
+                [
+                    [x1 + slant, y1],
+                    [x1 + rect_w, y1],
+                    [x1 + rect_w - slant, y1 + rect_h],
+                    [x1, y1 + rect_h],
+                ],
+                dtype=np.int32,
+            )
+
+    cv2.polylines(vis, [box], isClosed=True, color=guide_color, thickness=2)
+    cv2.circle(vis, (cx, cy), 6, guide_color, -1)
+
+    tilt_direction = target_plan.get("tilt_direction")
+    if tilt_direction == "down":
+        # Arrow shows the board should lean downward.
+        cv2.arrowedLine(vis, (cx, cy - rect_h // 4), (cx, cy + rect_h // 4), guide_color, 2, tipLength=0.2)
+    elif tilt_direction == "up":
+        # Arrow shows the board should lean upward.
+        cv2.arrowedLine(vis, (cx, cy + rect_h // 4), (cx, cy - rect_h // 4), guide_color, 2, tipLength=0.2)
+    elif tilt_direction == "left":
+        # Arrow shows the board should lean left.
+        cv2.arrowedLine(vis, (cx + rect_w // 4, cy), (cx - rect_w // 4, cy), guide_color, 2, tipLength=0.2)
+    elif tilt_direction == "right":
+        # Arrow shows the board should lean right.
+        cv2.arrowedLine(vis, (cx - rect_w // 4, cy), (cx + rect_w // 4, cy), guide_color, 2, tipLength=0.2)
+    elif tilt_direction == "roll":
+        # Rotation icon inside the box.
+        icon_r = max(8, min(rect_w, rect_h) // 7)
+        cv2.ellipse(vis, (cx, cy), (icon_r, icon_r), 0, 40, 330, guide_color, 2)
+        end_ang = np.deg2rad(330.0)
+        ex = cx + int(icon_r * np.cos(end_ang))
+        ey = cy + int(icon_r * np.sin(end_ang))
+        cv2.arrowedLine(vis, (ex - 8, ey + 3), (ex, ey), guide_color, 2, tipLength=0.55)
 
     # Rule-of-thirds style grid helps move the board to diverse positions.
     if show_grid:
@@ -73,15 +266,44 @@ def draw_capture_guides(
             cv2.line(vis, (0, gy), (w, gy), grid_color, 1)
 
     # Center crosshair remains as global reference.
-    cx, cy = w // 2, h // 2
-    cv2.line(vis, (cx - 16, cy), (cx + 16, cy), (170, 170, 170), 1)
-    cv2.line(vis, (cx, cy - 16), (cx, cy + 16), (170, 170, 170), 1)
+    center_x, center_y = w // 2, h // 2
+    cv2.line(vis, (center_x - 16, center_y), (center_x + 16, center_y), (170, 170, 170), 1)
+    cv2.line(vis, (center_x, center_y - 16), (center_x, center_y + 16), (170, 170, 170), 1)
 
     status = "Board: DETECTED" if checkerboard_found else "Board: NOT DETECTED"
+    distance_range = {
+        "near": "0.2-0.4m",
+        "mid": "0.5-1.5m",
+        "far": "2.0-4.0m",
+    }.get(target_plan["distance"], "-")
     cv2.putText(vis, status, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, guide_color, 2, cv2.LINE_AA)
     cv2.putText(vis, f"Saved: {saved_count}/25", (12, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (230, 230, 230), 1, cv2.LINE_AA)
     cv2.putText(vis, f"Target: {tx_idx + 1}/25", (12, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (230, 230, 230), 1, cv2.LINE_AA)
-    cv2.putText(vis, "Place board inside current box and press 's'", (12, h - 16),
+    cv2.putText(
+        vis,
+        f"Now: {target_plan['distance']}({distance_range}), {target_plan['size']}, {target_plan['orientation']}"
+        + (f"/{tilt_direction}" if tilt_direction else ""),
+        (12, 96),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.54,
+        (230, 230, 230),
+        1,
+        cv2.LINE_AA,
+    )
+
+    sync_text = "Sync: OK" if sync_ok else "Sync: NG"
+    sync_color = (0, 220, 0) if sync_ok else (0, 0, 255)
+    cv2.putText(vis, sync_text, (w - 120, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, sync_color, 2, cv2.LINE_AA)
+
+    p1 = "Y" if progress["distance_ratio"] else "N"
+    p2 = "Y" if progress["fov_coverage"] else "N"
+    p3 = "Y" if progress["orientation_coverage"] else "N"
+    p4 = "Y" if progress["scale_coverage"] else "N"
+    cv2.putText(vis, f"Checklist Depth:{p1} FOV:{p2}", (12, h - 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.47, (210, 210, 210), 1, cv2.LINE_AA)
+    cv2.putText(vis, f"Pose:{p3} Scale:{p4} Clear+Sync: manual/{'Y' if sync_ok else 'N'}", (12, h - 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.47, (210, 210, 210), 1, cv2.LINE_AA)
+    cv2.putText(vis, "Place board inside current box and press 's'", (12, h - 60),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (210, 210, 210), 1, cv2.LINE_AA)
     return vis
 
@@ -192,9 +414,13 @@ def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
     """Perform online stereo calibration from camera capture."""
     print("Starting stereo calibration. Move the checkerboard to cover the view.")
     print("Press 's' to save the current frame, ESC to finish.")
-    print("Guides: moving target box enabled (25 positions).")
+    print("Guides: 25-step target plan enabled (depth/FOV/orientation/scale).")
+    print("Depth targets: near=0.2-0.4m (10), mid=0.5-1.5m (10), far=2.0-4.0m (5).")
+    print("FOV targets: top-left/top-right/bottom-left/bottom-right/center.")
+    print("Orientation targets: fronto-parallel, yaw, pitch, roll.")
 
     objpoints, imgpoints_l, imgpoints_r = [], [], []
+    capture_plan = build_capture_plan()
     criteria = (cv2.TermCriteria_EPS + cv2.TermCriteria_MAX_ITER, 30, 0.001)
     saved_count = 0
     frame_count = 0
@@ -225,8 +451,11 @@ def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
 
         if verbose:
             target_index = min(saved_count, 24)
-            vis_l = draw_capture_guides(left_img, bool(ret_l), saved_count, target_index, show_grid=True)
-            vis_r = draw_capture_guides(right_img, bool(ret_r), saved_count, target_index, show_grid=True)
+            target_plan = capture_plan[target_index]
+            progress = checklist_progress(saved_count, capture_plan)
+            sync_ok = bool(ret_l and ret_r)
+            vis_l = draw_capture_guides(left_img, bool(ret_l), saved_count, target_index, target_plan, progress, sync_ok, show_grid=True)
+            vis_r = draw_capture_guides(right_img, bool(ret_r), saved_count, target_index, target_plan, progress, sync_ok, show_grid=True)
             if ret_l: cv2.drawChessboardCorners(vis_l, checkerboard_size, corners_l, ret_l)
             if ret_r: cv2.drawChessboardCorners(vis_r, checkerboard_size, corners_r, ret_r)
             cv2.imshow("Left Camera - Calibration", vis_l)
@@ -245,7 +474,16 @@ def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
                 img_name = os.path.join(save_dir, f"calib_{saved_count:02d}.png")
                 cv2.imwrite(img_name, frame)
                 if verbose:
+                    lap_l = cv2.Laplacian(gray_l, cv2.CV_64F).var()
+                    lap_r = cv2.Laplacian(gray_r, cv2.CV_64F).var()
+                    clarity = "OK" if (lap_l > 80 and lap_r > 80) else "SOFT"
+                    step = capture_plan[min(saved_count, 24)]
                     print(f"Saved calibration image {img_name}")
+                    print(
+                        f"Checklist step {saved_count + 1}/25 -> "
+                        f"distance={step['distance']}, size={step['size']}, orientation={step['orientation']}, "
+                        f"clarity={clarity} (L={lap_l:.1f}, R={lap_r:.1f}), sync=OK"
+                    )
                 saved_count += 1
             else:
                 if verbose:
@@ -288,6 +526,150 @@ def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
     np.savez(calib_file, **params)
     if verbose:
         print("Calibration complete and saved.")
+    return params
+
+
+def calibrate_stereo_from_saved_images(image_dir: str, verbose: bool = True) -> Dict:
+    """Recalibrate stereo cameras from previously saved side-by-side images."""
+    print(f"Starting stereo recalibration from saved images in: {image_dir}")
+
+    if not os.path.isdir(image_dir):
+        raise FileNotFoundError(f"Calibration image directory not found: {image_dir}")
+
+    image_files = sorted(
+        [
+            os.path.join(image_dir, name)
+            for name in os.listdir(image_dir)
+            if name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
+        ]
+    )
+    if not image_files:
+        raise RuntimeError(f"No calibration images found in: {image_dir}")
+
+    objpoints, imgpoints_l, imgpoints_r = [], [], []
+    criteria = (cv2.TermCriteria_EPS + cv2.TermCriteria_MAX_ITER, 30, 0.001)
+    target_size = None
+    used_files: List[str] = []
+
+    for image_path in image_files:
+        frame = cv2.imread(image_path)
+        if frame is None:
+            if verbose:
+                print(f"Skipping unreadable image: {image_path}")
+            continue
+
+        h, w = frame.shape[:2]
+        if w < 2:
+            if verbose:
+                print(f"Skipping too-small image: {image_path}")
+            continue
+
+        half_w = w // 2
+        left_img = frame[:, :half_w]
+        right_img = frame[:, half_w:]
+        gray_l = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY)
+        gray_r = cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY)
+
+        small_l = cv2.resize(gray_l, (0, 0), fx=0.5, fy=0.5)
+        ret_l, corners_l = cv2.findChessboardCorners(small_l, checkerboard_size)
+        if ret_l:
+            corners_l = corners_l * 2
+
+        small_r = cv2.resize(gray_r, (0, 0), fx=0.5, fy=0.5)
+        ret_r, corners_r = cv2.findChessboardCorners(small_r, checkerboard_size)
+        if ret_r:
+            corners_r = corners_r * 2
+
+        if verbose:
+            print(f"{os.path.basename(image_path)}: ret_l={ret_l}, ret_r={ret_r}")
+
+        if ret_l and ret_r:
+            corners_l2 = cv2.cornerSubPix(gray_l, corners_l, (11, 11), (-1, -1), criteria)
+            corners_r2 = cv2.cornerSubPix(gray_r, corners_r, (11, 11), (-1, -1), criteria)
+            objpoints.append(objp)
+            imgpoints_l.append(corners_l2)
+            imgpoints_r.append(corners_r2)
+            target_size = gray_l.shape[::-1]
+            used_files.append(image_path)
+
+    if not used_files:
+        raise RuntimeError(
+            f"No valid stereo calibration pairs found in {image_dir}. "
+            "Make sure the saved images contain a detectable checkerboard in both halves."
+        )
+
+    if len(used_files) < 5 and verbose:
+        print(f"Warning: only {len(used_files)} valid calibration pairs were found.")
+
+    if target_size is None:
+        raise RuntimeError("Could not determine calibration image size from saved images.")
+
+    # Single camera calibration from saved observations.
+    ret_l, K_l, dist_l, rvecs_l, tvecs_l = cv2.calibrateCamera(
+        objpoints, imgpoints_l, target_size, None, None
+    )
+    ret_r, K_r, dist_r, rvecs_r, tvecs_r = cv2.calibrateCamera(
+        objpoints, imgpoints_r, target_size, None, None
+    )
+
+    # Stereo calibration with fixed intrinsics.
+    flags = cv2.CALIB_FIX_INTRINSIC
+    ret_stereo, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+        objpoints,
+        imgpoints_l,
+        imgpoints_r,
+        K_l,
+        dist_l,
+        K_r,
+        dist_r,
+        target_size,
+        criteria=criteria,
+        flags=flags,
+    )
+
+    R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
+        K_l, dist_l, K_r, dist_r, target_size, R, T, alpha=0
+    )
+
+    print_calibration_report(
+        ret_l,
+        ret_r,
+        ret_stereo,
+        objpoints,
+        imgpoints_l,
+        imgpoints_r,
+        rvecs_l,
+        tvecs_l,
+        rvecs_r,
+        tvecs_r,
+        K_l,
+        dist_l,
+        K_r,
+        dist_r,
+        T,
+        R1,
+        P1,
+        R2,
+        P2,
+        verbose,
+    )
+
+    params = {
+        "K_l": K_l,
+        "dist_l": dist_l,
+        "K_r": K_r,
+        "dist_r": dist_r,
+        "R": R,
+        "T": T,
+        "R1": R1,
+        "R2": R2,
+        "P1": P1,
+        "P2": P2,
+        "Q": Q,
+    }
+    np.savez(calib_file, **params)
+    if verbose:
+        print(f"Recalibration complete and saved to {calib_file}. Used {len(used_files)} image pairs.")
     return params
 
 
