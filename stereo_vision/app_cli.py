@@ -111,6 +111,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reduce OpenCV runtime log level to ERROR (hides non-fatal GStreamer WARN messages)",
     )
+    parser.add_argument(
+        "--no-display",
+        action="store_true",
+        help="Run in headless mode without OpenCV window display (logs/metrics only)",
+    )
     parser.add_argument("--swap-lr", action="store_true", help="Swap left/right camera halves")
     parser.add_argument(
         "--use-precomputed-rect",

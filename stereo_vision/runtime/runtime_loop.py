@@ -133,15 +133,20 @@ def run_runtime_loop(
     runtime_note_text: str | None = None
     runtime_note_until = 0.0
 
+    show_display = not bool(getattr(args, "no_display", False))
     win = "stereo_distance"
-    cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    if show_display:
+        cv2.namedWindow(win, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     viz_state = VizState()
-    register_click(win, viz_state)
-    print("[INFO] Keyboard control is captured by the video window. Click the window before pressing 1-4/n/s/z/x/c/v/q.")
+    if show_display:
+        register_click(win, viz_state)
+        print("[INFO] Keyboard control is captured by the video window. Click the window before pressing 1-4/n/s/z/x/c/v/q.")
+    else:
+        print("[INFO] Display disabled (--no-display). Running in log-only headless mode.")
 
     perf = PerfStats()
     window_sized = False
-    screen_size = get_screen_size()
+    screen_size = get_screen_size() if show_display else None
     switch_state = configure_switch_runtime_state(
         multi_mode=multi_mode,
         cam=cam,
@@ -293,53 +298,56 @@ def run_runtime_loop(
                 last_log_t = t0
 
             # 7) Build visualization layers and on-screen diagnostics.
-            left_viz, disp_vis, preview_nv12_warned = compose_runtime_visualization(
-                left_rect=left_rect,
-                preview_pair_raw=preview_pair_raw,
-                rect=rect,
-                preview_nv12_warned=preview_nv12_warned,
-                disparity=disparity,
-                roi_scaled=roi_scaled,
-                min_disp=float(args.min_disp),
-                max_disp=float(args.min_disp + effective_num_disp),
-                distance_filtered=distance_filtered,
-                fps=fps,
-                latency_ms=latency_ms,
-                active_idx=active_idx,
-                device_list=device_list,
-                switch_state=switch_state,
-                valid_pixels=valid_pixels,
-                total_pixels=total_pixels,
-                valid_ratio=valid_ratio,
-                positive_disp_pixels=positive_disp_pixels,
-                clipped_by_max_depth=clipped_by_max_depth,
-                distance_raw=distance_raw,
-                roi_gate_note=roi_gate_note,
-                roi_tune_preset=roi_tuning.roi_tune_preset,
-                runtime_note_text=runtime_note_text,
-                runtime_note_until=runtime_note_until,
-            )
             t_depth = time.perf_counter()
+            t_viz = t_depth
+            if show_display:
+                left_viz, disp_vis, preview_nv12_warned = compose_runtime_visualization(
+                    left_rect=left_rect,
+                    preview_pair_raw=preview_pair_raw,
+                    rect=rect,
+                    preview_nv12_warned=preview_nv12_warned,
+                    disparity=disparity,
+                    roi_scaled=roi_scaled,
+                    min_disp=float(args.min_disp),
+                    max_disp=float(args.min_disp + effective_num_disp),
+                    distance_filtered=distance_filtered,
+                    fps=fps,
+                    latency_ms=latency_ms,
+                    active_idx=active_idx,
+                    device_list=device_list,
+                    switch_state=switch_state,
+                    valid_pixels=valid_pixels,
+                    total_pixels=total_pixels,
+                    valid_ratio=valid_ratio,
+                    positive_disp_pixels=positive_disp_pixels,
+                    clipped_by_max_depth=clipped_by_max_depth,
+                    distance_raw=distance_raw,
+                    roi_gate_note=roi_gate_note,
+                    roi_tune_preset=roi_tuning.roi_tune_preset,
+                    runtime_note_text=runtime_note_text,
+                    runtime_note_until=runtime_note_until,
+                )
+                t_depth = time.perf_counter()
 
-            # Optional per-pixel inspection from last mouse click.
-            left_viz = apply_click_probe_overlay(
-                left_viz,
-                click_px=click_px,
-                click_depth=click_depth,
-            )
+                # Optional per-pixel inspection from last mouse click.
+                left_viz = apply_click_probe_overlay(
+                    left_viz,
+                    click_px=click_px,
+                    click_depth=click_depth,
+                )
 
-            stack = np.hstack([left_viz, disp_vis])
-            if not window_sized:
-                win_w, win_h = int(stack.shape[1]), int(stack.shape[0])
-                cv2.resizeWindow(win, win_w, win_h)
-                if screen_size is not None:
-                    screen_w, screen_h = screen_size
-                    pos_x = max(0, (screen_w - win_w) // 2)
-                    pos_y = max(0, (screen_h - win_h) // 2)
-                    cv2.moveWindow(win, pos_x, pos_y)
-                window_sized = True
-            cv2.imshow(win, stack)
-            t_viz = time.perf_counter()
+                stack = np.hstack([left_viz, disp_vis])
+                if not window_sized:
+                    win_w, win_h = int(stack.shape[1]), int(stack.shape[0])
+                    cv2.resizeWindow(win, win_w, win_h)
+                    if screen_size is not None:
+                        screen_w, screen_h = screen_size
+                        pos_x = max(0, (screen_w - win_w) // 2)
+                        pos_y = max(0, (screen_h - win_h) // 2)
+                        cv2.moveWindow(win, pos_x, pos_y)
+                    window_sized = True
+                cv2.imshow(win, stack)
+                t_viz = time.perf_counter()
 
             # Persist per-stage timings and emit a periodic profile line when enabled.
             profile_line = profiler.record(
@@ -355,23 +363,24 @@ def run_runtime_loop(
                 print(profile_line)
 
             # Handle keyboard controls for source switching, presets, and shutdown.
-            key_raw = cv2.waitKeyEx(1)
-            swap_lr, key_note_text, key_note_until, should_exit = process_runtime_key_events(
-                key_raw=key_raw,
-                swap_lr=swap_lr,
-                multi_mode=multi_mode,
-                device_list=device_list,
-                active_idx=active_idx,
-                cam=cam,
-                switch_state=switch_state,
-                apply_roi_tune_preset=roi_tuning.apply_preset,
-            )
-            if key_note_text is not None:
-                runtime_note_text = key_note_text
-                runtime_note_until = key_note_until
+            if show_display:
+                key_raw = cv2.waitKeyEx(1)
+                swap_lr, key_note_text, key_note_until, should_exit = process_runtime_key_events(
+                    key_raw=key_raw,
+                    swap_lr=swap_lr,
+                    multi_mode=multi_mode,
+                    device_list=device_list,
+                    active_idx=active_idx,
+                    cam=cam,
+                    switch_state=switch_state,
+                    apply_roi_tune_preset=roi_tuning.apply_preset,
+                )
+                if key_note_text is not None:
+                    runtime_note_text = key_note_text
+                    runtime_note_until = key_note_until
 
-            if should_exit:
-                break
+                if should_exit:
+                    break
     finally:
         if log_file is not None:
             log_file.close()
