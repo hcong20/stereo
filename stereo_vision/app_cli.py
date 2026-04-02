@@ -197,6 +197,26 @@ def parse_args() -> argparse.Namespace:
         default=60,
         help="Frames per profiling report when --profile-stages is enabled",
     )
+    parser.add_argument(
+        "--log-measurements",
+        action="store_true",
+        help=(
+            "Log timestamped distance and FPS measurements during runtime. "
+            "Output is printed to stdout and can optionally be written to CSV."
+        ),
+    )
+    parser.add_argument(
+        "--log-interval-ms",
+        type=float,
+        default=250.0,
+        help="Measurement logging interval in milliseconds when --log-measurements is enabled",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default="",
+        help="Optional CSV file path for measurement logs",
+    )
 
     return parser.parse_args()
 

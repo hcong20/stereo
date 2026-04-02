@@ -186,10 +186,10 @@ def finalize_pending_switch(
                 "[INFO] Switch complete: "
                 f"from_input={pending_from_idx + 1}, to_input={active_idx + 1}, "
                 f"latency={state.last_switch_latency_ms:.1f}ms, "
-                f"seg_stop={float(state.last_switch_breakdown.get('stop_ms', 0.0)):.0f}ms, "
+                f"[seg_stop={float(state.last_switch_breakdown.get('stop_ms', 0.0)):.0f}ms, "
                 f"seg_open={float(state.last_switch_breakdown.get('open_ms', 0.0)):.0f}ms, "
                 f"seg_frame={float(state.last_switch_breakdown.get('first_frame_ms', 0.0)):.0f}ms, "
-                f"seg_total={float(state.last_switch_breakdown.get('total_ms', 0.0)):.0f}ms"
+                f"seg_total={float(state.last_switch_breakdown.get('total_ms', 0.0)):.0f}ms]"
             )
         else:
             print(
