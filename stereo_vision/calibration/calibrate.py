@@ -31,7 +31,14 @@ objp *= square_size
 # Helper functions
 # -------------------------------
 def build_capture_plan() -> List[Dict[str, Any]]:
-    """Create a 25-step plan: near/mid each have 5 frontal + 5 tilted, far has 5 frontal."""
+    """Create a 25-step capture plan.
+
+    Args:
+        None.
+
+    Returns:
+        A list of 25 capture targets covering near, mid, and far distances.
+    """
     plan: List[Dict[str, Any]] = []
 
     # These five locations define the frontal coverage: four corners plus center.
@@ -89,7 +96,15 @@ def build_capture_plan() -> List[Dict[str, Any]]:
 
 
 def checklist_progress(saved_count: int, capture_plan: List[Dict[str, Any]]) -> Dict[str, bool]:
-    """Return whether each requested checklist category has been covered."""
+    """Summarize which calibration checklist categories are covered.
+
+    Args:
+        saved_count: Number of already saved calibration frames.
+        capture_plan: Full ordered capture plan.
+
+    Returns:
+        Dictionary of checklist flags describing coverage progress.
+    """
     done_items = capture_plan[:saved_count]
 
     # Track coverage by distance, position, and pose so the overlay can show progress.
@@ -137,7 +152,21 @@ def draw_capture_guides(
     sync_ok: bool,
     show_grid: bool = True
 ) -> np.ndarray:
-    """Draw visual guides to help checkerboard placement during capture."""
+    """Draw visual guides to help checkerboard placement during capture.
+
+    Args:
+        image: Source image to annotate.
+        checkerboard_found: Whether the checkerboard is currently detected.
+        saved_count: Number of saved calibration frames.
+        target_index: Index of the current capture target.
+        target_plan: Metadata for the current capture target.
+        progress: Checklist progress flags.
+        sync_ok: Whether both stereo views currently detect the board.
+        show_grid: Whether to draw the rule-of-thirds helper grid.
+
+    Returns:
+        Annotated visualization image.
+    """
     vis = image.copy()
     h, w = vis.shape[:2]
 
@@ -148,8 +177,11 @@ def draw_capture_guides(
     # Box size follows guidance text (near/large -> bigger, far/small -> smaller).
     size_scale = {"large": 1.40, "medium": 1.00, "small": 0.60}
     scale = size_scale.get(target_plan["size"], 1.0)
-    rect_w = int(w * 0.32 * scale)
-    rect_h = int(h * 0.34 * scale)
+    box_ratio = float(checkerboard_size[0]) / float(checkerboard_size[1])
+    rect_h = int(h * 0.3 * scale)
+    rect_w = int(round(rect_h * box_ratio))
+    rect_w = max(1, min(rect_w, w))
+    rect_h = max(1, min(rect_h, h))
     x1 = int(np.clip(target_x - rect_w // 2, 0, max(0, w - rect_w - 1)))
     y1 = int(np.clip(target_y - rect_h // 2, 0, max(0, h - rect_h - 1)))
     cx = x1 + rect_w // 2
@@ -316,7 +348,19 @@ def compute_reprojection_errors(
     K: np.ndarray, 
     dist: np.ndarray
 ) -> Tuple[List[float], float]:
-    """Compute per-frame reprojection errors and overall mean (pixels)."""
+    """Compute per-frame reprojection errors and overall mean in pixels.
+
+    Args:
+        objpoints: Calibrated 3D object points for each frame.
+        imgpoints: Detected 2D image points for each frame.
+        rvecs: Per-frame rotation vectors from calibration.
+        tvecs: Per-frame translation vectors from calibration.
+        K: Camera intrinsic matrix.
+        dist: Lens distortion coefficients.
+
+    Returns:
+        Tuple of per-frame errors and their mean error.
+    """
     per_view_errors = []
     for i in range(len(objpoints)):
         projected, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], K, dist)
@@ -334,7 +378,23 @@ def compute_rectified_row_error(
     R1: np.ndarray, P1: np.ndarray, 
     R2: np.ndarray, P2: np.ndarray
 ) -> Tuple[float, float]:
-    """Compute vertical alignment error after rectification |y_left - y_right| (pixels)."""
+    """Compute vertical alignment error after rectification.
+
+    Args:
+        imgpoints_l: Left image points per frame.
+        imgpoints_r: Right image points per frame.
+        K_l: Left camera intrinsic matrix.
+        dist_l: Left camera distortion coefficients.
+        K_r: Right camera intrinsic matrix.
+        dist_r: Right camera distortion coefficients.
+        R1: Left rectification transform.
+        P1: Left projection matrix after rectification.
+        R2: Right rectification transform.
+        P2: Right projection matrix after rectification.
+
+    Returns:
+        Mean and maximum absolute vertical row error in pixels.
+    """
     row_errors = []
     for pts_l, pts_r in zip(imgpoints_l, imgpoints_r):
         rect_l = cv2.undistortPoints(pts_l, K_l, dist_l, R=R1, P=P1)
@@ -358,7 +418,33 @@ def print_calibration_report(
     R1: np.ndarray, P1: np.ndarray, R2: np.ndarray, P2: np.ndarray,
     verbose: bool = True
 ):
-    """Print calibration quality report in English."""
+    """Print a calibration quality report.
+
+    Args:
+        ret_l: Left camera RMS reprojection error from calibration.
+        ret_r: Right camera RMS reprojection error from calibration.
+        ret_stereo: Stereo calibration RMS error.
+        objpoints: 3D object points used for calibration.
+        imgpoints_l: Left detected image points.
+        imgpoints_r: Right detected image points.
+        rvecs_l: Left camera rotation vectors.
+        tvecs_l: Left camera translation vectors.
+        rvecs_r: Right camera rotation vectors.
+        tvecs_r: Right camera translation vectors.
+        K_l: Left camera intrinsic matrix.
+        dist_l: Left camera distortion coefficients.
+        K_r: Right camera intrinsic matrix.
+        dist_r: Right camera distortion coefficients.
+        T: Stereo baseline translation vector.
+        R1: Left rectification rotation.
+        P1: Left rectification projection matrix.
+        R2: Right rectification rotation.
+        P2: Right rectification projection matrix.
+        verbose: Whether to print the detailed report.
+
+    Returns:
+        None.
+    """
     per_l, mean_l = compute_reprojection_errors(objpoints, imgpoints_l, rvecs_l, tvecs_l, K_l, dist_l)
     per_r, mean_r = compute_reprojection_errors(objpoints, imgpoints_r, rvecs_r, tvecs_r, K_r, dist_r)
     row_mean, row_max = compute_rectified_row_error(imgpoints_l, imgpoints_r, K_l, dist_l, K_r, dist_r, R1, P1, R2, P2)
@@ -411,7 +497,15 @@ def print_calibration_report(
 # Online calibration
 # -------------------------------
 def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
-    """Perform online stereo calibration from camera capture."""
+    """Perform online stereo calibration from camera capture.
+
+    Args:
+        cap: OpenCV video capture device.
+        verbose: Whether to print progress and diagnostics.
+
+    Returns:
+        Dictionary of stereo calibration parameters.
+    """
     print("Starting stereo calibration. Move the checkerboard to cover the view.")
     print("Press 's' to save the current frame, ESC to finish.")
     print("Guides: 25-step target plan enabled (depth/FOV/orientation/scale).")
@@ -530,7 +624,15 @@ def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
 
 
 def calibrate_stereo_from_saved_images(image_dir: str, verbose: bool = True) -> Dict:
-    """Recalibrate stereo cameras from previously saved side-by-side images."""
+    """Recalibrate stereo cameras from previously saved side-by-side images.
+
+    Args:
+        image_dir: Directory containing saved calibration images.
+        verbose: Whether to print progress and diagnostics.
+
+    Returns:
+        Dictionary of stereo calibration parameters.
+    """
     print(f"Starting stereo recalibration from saved images in: {image_dir}")
 
     if not os.path.isdir(image_dir):
@@ -677,8 +779,16 @@ def calibrate_stereo_from_saved_images(image_dir: str, verbose: bool = True) -> 
 # Main entry
 # -------------------------------
 def main():
+    """Run the calibration entry point.
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
     verbose = True  # toggle this to False for silent mode
-    if "--recalibrate-images" in sys.argv:
+    if "--images" in sys.argv:
         calibrate_stereo_from_saved_images(save_dir)
         return
 
