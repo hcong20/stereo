@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import sys
 from collections import deque
 
 # =========================
@@ -49,7 +50,16 @@ def get_center_roi(img):
 # =========================
 # Main
 # =========================
-cap = cv2.VideoCapture(26, cv2.CAP_V4L2)
+if sys.platform == "darwin":
+    camera_backend = cv2.CAP_AVFOUNDATION
+elif sys.platform.startswith("linux"):
+    camera_backend = cv2.CAP_V4L2
+else:
+    camera_backend = cv2.CAP_ANY
+
+cap = cv2.VideoCapture(26, camera_backend)
+if not cap.isOpened():
+    cap = cv2.VideoCapture(26)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 

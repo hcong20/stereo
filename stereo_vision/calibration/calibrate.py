@@ -16,11 +16,6 @@ calib_file = 'stereo_calib_params.npz'
 save_dir = "calib_images"
 os.makedirs(save_dir, exist_ok=True)
 
-# Depth engineering parameters (record only, not used directly here)
-min_range = 200   # mm
-max_range = 4000  # mm
-baseline = 60     # mm (converted from meters)
-
 # Object points template (Z=0 plane, units: mm)
 objp = np.zeros((checkerboard_size[1]*checkerboard_size[0], 3), np.float32)
 objp[:, :2] = np.mgrid[0:checkerboard_size[0], 0:checkerboard_size[1]].T.reshape(-1, 2)
@@ -30,6 +25,14 @@ objp *= square_size
 # -------------------------------
 # Helper functions
 # -------------------------------
+def select_camera_backend() -> int:
+    if sys.platform == "darwin":
+        return cv2.CAP_AVFOUNDATION
+    if sys.platform.startswith("linux"):
+        return cv2.CAP_V4L2
+    return cv2.CAP_ANY
+
+
 def build_capture_plan() -> List[Dict[str, Any]]:
     """Create a 25-step capture plan.
 
@@ -792,7 +795,7 @@ def main():
         calibrate_stereo_from_saved_images(save_dir)
         return
 
-    cap = cv2.VideoCapture(20, cv2.CAP_V4L2)  # Adjust camera index as needed
+    cap = cv2.VideoCapture(0, select_camera_backend())  # Adjust camera index as needed
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
     try:

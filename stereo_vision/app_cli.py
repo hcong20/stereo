@@ -1,6 +1,7 @@
 """CLI and lightweight runtime helpers for stereo app entrypoints."""
 
 import argparse
+import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -26,10 +27,10 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI options for camera, disparity, depth, and filtering."""
     parser = argparse.ArgumentParser(description="RK3588 Stereo Distance Measurement")
 
-    parser.add_argument("--device", default="/dev/video20")
+    parser.add_argument("--device", default="0")
     parser.add_argument(
         "--devices",
-        default="/dev/video20,/dev/video22,/dev/video24,/dev/video26",
+        default="",
         help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
     )
     parser.add_argument(
@@ -56,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--bus-groups",
-        default="0,0,2,2",
+        default="",
         help=(
             "Comma-separated bus/group label for each input device, "
             "e.g. 0,0,2,2 for 4 inputs. "
@@ -127,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--crop-height-ratio",
         type=float,
-        default=0.5,
+        default=1,
         help=(
             "Vertical center-crop ratio applied after resize and before disparity. "
             "Must be > 0; 1.0 disables crop"
@@ -246,6 +247,9 @@ def parse_physical_size_mm(text: str) -> tuple[float, float]:
 
 def get_screen_size() -> tuple[int, int] | None:
     """Best-effort screen size query for window centering."""
+    if sys.platform == "darwin":
+        # Tkinter screen probing can abort on some macOS/Python builds.
+        return None
     try:
         import tkinter as tk
 

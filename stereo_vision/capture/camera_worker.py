@@ -4,6 +4,7 @@ The expected raw frame layout is [left | right] in a single image.
 """
 
 import time
+import sys
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -22,7 +23,7 @@ from stereo_vision.capture.gstreamer_pipelines import (
 
 @dataclass
 class CameraConfig:
-    """Runtime camera settings for OpenCV V4L2/GStreamer capture.
+    """Runtime camera settings for OpenCV device/GStreamer capture.
 
     Attributes:
         device: Video device node, e.g. /dev/video0.
@@ -37,7 +38,7 @@ class CameraConfig:
         warmup_frames: Frames to discard after open.
     """
 
-    device: str = "/dev/video0"
+    device: str = "0"
     width: int = 1280
     height: int = 480
     fps: int = 30
@@ -53,7 +54,7 @@ class CameraConfig:
 class CameraWorker:
     """Capture combined stereo frame and split into left/right images.
 
-    This wrapper hides backend differences (V4L2 vs GStreamer) and always
+    This wrapper hides backend differences (AVFoundation/V4L2 vs GStreamer) and always
     returns synchronized left/right images from a single captured frame.
     """
 
@@ -78,6 +79,31 @@ class CameraWorker:
         if len(compact) <= max_len:
             return compact
         return compact[: max_len - 3] + "..."
+
+    @staticmethod
+    def _opencv_device_backend() -> int:
+        """Select OpenCV device backend by platform.
+
+        macOS: AVFoundation
+        Linux: V4L2
+        Others: OpenCV auto backend
+        """
+        if sys.platform == "darwin":
+            return cv2.CAP_AVFOUNDATION
+        if sys.platform.startswith("linux"):
+            return cv2.CAP_V4L2
+        return cv2.CAP_ANY
+
+    def _opencv_capture_source(self) -> int | str:
+        """Return an OpenCV capture source value with numeric strings normalized.
+
+        OpenCV's native device backends handle integer indices more reliably than
+        stringified integers such as "0" on macOS/AVFoundation.
+        """
+        device = str(self.cfg.device).strip()
+        if device.isdigit():
+            return int(device)
+        return self.cfg.device
 
     def _open_gstreamer_single_pipeline(self) -> None:
         """Open one GStreamer pipeline (single appsink) with candidate fallback."""
@@ -141,7 +167,8 @@ class CameraWorker:
         if self.cfg.use_gstreamer:
             self._open_gstreamer_single_pipeline()
         else:
-            self.cap = cv2.VideoCapture(self.cfg.device, cv2.CAP_V4L2)
+            backend = self._opencv_device_backend()
+            self.cap = cv2.VideoCapture(self._opencv_capture_source(), backend)
 
         if self.cap is None or not self.cap.isOpened():
             raise RuntimeError("Failed to open stereo camera")

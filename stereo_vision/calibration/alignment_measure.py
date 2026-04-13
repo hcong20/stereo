@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import sys
 
 # =========================
 # Const Parameters
@@ -35,7 +36,14 @@ def draw_horizontal_lines(img, step=50):
 # =========================
 # Main
 # =========================
-cap = cv2.VideoCapture(20, cv2.CAP_V4L2)
+if sys.platform == "darwin":
+    camera_backend = cv2.CAP_AVFOUNDATION
+elif sys.platform.startswith("linux"):
+    camera_backend = cv2.CAP_V4L2
+else:
+    camera_backend = cv2.CAP_ANY
+
+cap = cv2.VideoCapture(0, camera_backend)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
