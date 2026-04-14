@@ -17,6 +17,7 @@ class TemporalFilterConfig:
     ema_alpha: float = 0.35
     max_jump_m: float = 1.5
     window: int = 5
+    jump_recovery_frames: int = 3
 
 
 class DistanceFilter:
@@ -30,6 +31,13 @@ class DistanceFilter:
         self.cfg = cfg
         self.history = deque(maxlen=max(1, cfg.window))
         self.ema: Optional[float] = None
+        self._rejected_candidate: Optional[float] = None
+        self._rejected_count = 0
+
+    def _reset_recovery_state(self) -> None:
+        """Clear jump-recovery bookkeeping after accepted measurements."""
+        self._rejected_candidate = None
+        self._rejected_count = 0
 
     def update(self, measurement_m: Optional[float]) -> Optional[float]:
         """Update filter with a measurement and return smoothed value.
@@ -43,12 +51,33 @@ class DistanceFilter:
         if measurement_m is None or not np.isfinite(measurement_m):
             return self.ema
 
+        measurement = float(measurement_m)
+
         # Reject abrupt changes relative to current trend.
-        if self.ema is not None and abs(measurement_m - self.ema) > self.cfg.max_jump_m:
+        if self.ema is not None and abs(measurement - self.ema) > self.cfg.max_jump_m:
+            # Allow recovery when a new stable scene persists for several frames.
+            recovery_band = max(0.05, 0.25 * float(self.cfg.max_jump_m))
+            if (
+                self._rejected_candidate is not None
+                and abs(measurement - self._rejected_candidate) <= recovery_band
+            ):
+                self._rejected_count += 1
+            else:
+                self._rejected_candidate = measurement
+                self._rejected_count = 1
+
+            if self._rejected_count >= max(1, int(self.cfg.jump_recovery_frames)):
+                # Re-center filter when jump is sustained instead of spiky.
+                self.history.clear()
+                self.history.append(measurement)
+                self.ema = measurement
+                self._reset_recovery_state()
             return self.ema
 
+        self._reset_recovery_state()
+
         # Median is computed over recent history to reduce transient spikes.
-        self.history.append(float(measurement_m))
+        self.history.append(measurement)
         median_value = float(np.median(np.array(self.history, dtype=np.float32)))
 
         if self.ema is None:
