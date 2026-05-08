@@ -23,7 +23,7 @@ class StartupResult:
     right0: np.ndarray
 
 
-def _parse_bus_groups(text: str, source_count: int) -> Optional[list[str]]:
+def _parse_usb_bus_groups(text: str, source_count: int) -> Optional[list[str]]:
     """Parse bus/group labels provided as comma-separated text."""
     raw = str(text).strip()
     if raw == "":
@@ -31,10 +31,24 @@ def _parse_bus_groups(text: str, source_count: int) -> Optional[list[str]]:
     groups = [part.strip() for part in raw.split(",") if part.strip() != ""]
     if len(groups) != int(source_count):
         raise ValueError(
-            "--bus-groups count must match number of inputs: "
+            "--usb-bus-groups count must match number of inputs: "
             f"got {len(groups)} labels for {source_count} devices"
         )
     return groups
+
+
+def _parse_direction_labels(text: str, source_count: int) -> Optional[list[str]]:
+    """Parse direction labels provided as comma-separated text."""
+    raw = str(text).strip()
+    if raw == "":
+        return None
+    labels = [part.strip() for part in raw.split(",") if part.strip() != ""]
+    if len(labels) != int(source_count):
+        raise ValueError(
+            "--directions count must match number of inputs: "
+            f"got {len(labels)} labels for {source_count} devices"
+        )
+    return labels
 
 
 def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> StartupResult:
@@ -43,7 +57,9 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
     multi_mode = len(device_list) > 1
     cam: Optional[CameraManger | CameraWorker] = None
     active_idx = 0
-    bus_groups = _parse_bus_groups(getattr(args, "bus_groups", ""), len(device_list))
+    bus_groups = _parse_usb_bus_groups(getattr(args, "usb_bus_groups"), len(device_list))
+    direction_labels = _parse_direction_labels(getattr(args, "directions", ""), len(device_list))
+    print(f"[INFO] Detected {len(device_list)} input devices: {device_list}, usb_bus_groups={bus_groups}, direction_labels={direction_labels}")
     gst_pipeline_template = str(getattr(args, "gstreamer_pipeline", "") or "").strip()
 
     def resolve_gst_pipeline(device: str) -> Optional[str]:
@@ -83,8 +99,8 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
         if multi_mode:
             if bus_groups is None:
                 raise ValueError(
-                    "Multi-input mode now requires --bus-groups. "
-                    "Example: --bus-groups 0,0,2,2"
+                    "Multi-input mode now requires --usb-bus-groups. "
+                    "Example: --usb-bus-groups front_right,front_right,back_left,back_left"
                 )
 
             cam = CameraManger(
@@ -107,9 +123,12 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                 for st in statuses:
                     age_text = "N/A" if st["frame_age_ms"] is None else f"{st['frame_age_ms']:.0f}ms"
                     err_text = st["last_error"] if st["last_error"] else "-"
+                    direction_text = ""
+                    if direction_labels is not None and st["index"] < len(direction_labels):
+                        direction_text = f" dir={direction_labels[st['index']]}"
                     print(
                         "[INFO] "
-                        f"input={st['index'] + 1} dev={st['device']} has_frame={st['has_frame']} "
+                        f"input={st['index'] + 1}{direction_text} dev={st['device']} has_frame={st['has_frame']} "
                         f"group={st.get('group', '-')} group_live={st.get('group_live', False)} "
                         f"age={age_text} frame_id={st['frame_id']} err={err_text}"
                     )
@@ -136,8 +155,10 @@ def initialize_capture(args: argparse.Namespace, device_list: list[str]) -> Star
                 f"[INFO] Multi-input mode enabled: inputs={len(device_list)}, "
                 f"active={active_idx + 1}, devices={device_list}"
             )
+            if direction_labels is not None:
+                print(f"[INFO] direction_map={direction_labels}")
             print("[INFO] capture_mode=group-linked-single-active")
-            print(f"[INFO] bus_groups={bus_groups}, group_live_mode={cam.group_live_mode}")
+            print(f"[INFO] usb_bus_groups={bus_groups}, group_live_mode={cam.group_live_mode}")
         else:
             cam = CameraWorker(cam_cfgs[0])
             cam.open()

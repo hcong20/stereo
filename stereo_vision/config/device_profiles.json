@@ -1,0 +1,54 @@
+{
+  "default": {
+    "device": "0",
+    "source_map": [
+      { "device": "/dev/video20", "direction": "font", "usb_bus_group": "front_right" },
+      { "device": "/dev/video22", "direction": "right", "usb_bus_group": "front_right" },
+      { "device": "/dev/video24", "direction": "back", "usb_bus_group": "back_left" },
+      { "device": "/dev/video26", "direction": "left", "usb_bus_group": "back_left" }
+    ],
+    "active_input": 1,
+    "switch_timeout_ms": 2000.0,
+    "calib": "stereo_calib_params.npz",
+    "width": 1280,
+    "height": 480,
+    "fps": 30,
+    "warmup_frames": 1,
+    "usb_bus_groups": "",
+    "bus_groups": "",
+    "gstreamer": false,
+    "gstreamer_pipeline": "",
+    "gst_decode": "auto",
+    "gst_output": "auto",
+    "nv12_preview_bgr": false
+  },
+  "profiles": {
+    "macos": {
+      "device": "0"
+    },
+    "ubuntu": {
+      "source_map": [
+        { "device": "/dev/video20", "direction": "font", "usb_bus_group": "front_right" },
+        { "device": "/dev/video22", "direction": "right", "usb_bus_group": "front_right" },
+        { "device": "/dev/video24", "direction": "back", "usb_bus_group": "back_left" },
+        { "device": "/dev/video26", "direction": "left", "usb_bus_group": "back_left" }
+      ]
+    },
+    "debian": {
+      "source_map": [
+        { "device": "/dev/video20", "direction": "font", "usb_bus_group": "front_right" },
+        { "device": "/dev/video22", "direction": "right", "usb_bus_group": "front_right" },
+        { "device": "/dev/video24", "direction": "back", "usb_bus_group": "back_left" },
+        { "device": "/dev/video26", "direction": "left", "usb_bus_group": "back_left" }
+      ]
+    },
+    "linux": {
+      "source_map": [
+        { "device": "/dev/video20", "direction": "font", "usb_bus_group": "front_right" },
+        { "device": "/dev/video22", "direction": "right", "usb_bus_group": "front_right" },
+        { "device": "/dev/video24", "direction": "back", "usb_bus_group": "back_left" },
+        { "device": "/dev/video26", "direction": "left", "usb_bus_group": "back_left" }
+      ]
+    }
+  }
+}

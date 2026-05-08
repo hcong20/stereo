@@ -1,18 +1,23 @@
+import argparse
 import cv2
 import numpy as np
 import os
 import sys
+from pathlib import Path
 from typing import List, Tuple, Dict, Any
+
+from stereo_vision.config.calibration_paths import calibration_path_for_device, calibration_path_for_direction
+from stereo_vision.app_cli import _load_runtime_defaults
 
 # -------------------------------
 # Parameters
 # -------------------------------
-FRAME_WIDTH = 1280
-FRAME_HEIGHT = 480
+# frame size defaults are provided by the device profile config; fall back to these
+FALLBACK_FRAME_WIDTH = 1280
+FALLBACK_FRAME_HEIGHT = 480
 
 checkerboard_size = (10, 6)      # Internal corners (width, height)
 square_size = 17.8               # mm, size of one square
-calib_file = 'stereo_calib_params.npz'
 save_dir = "calib_images"
 os.makedirs(save_dir, exist_ok=True)
 
@@ -499,7 +504,15 @@ def print_calibration_report(
 # -------------------------------
 # Online calibration
 # -------------------------------
-def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
+def _device_source(device_text: str) -> int | str:
+    """Convert a CLI device string into an OpenCV capture source."""
+    try:
+        return int(str(device_text).strip())
+    except ValueError:
+        return str(device_text)
+
+
+def calibrate_stereo(cap: cv2.VideoCapture, calib_path: str | Path, verbose: bool = True) -> Dict:
     """Perform online stereo calibration from camera capture.
 
     Args:
@@ -620,13 +633,19 @@ def calibrate_stereo(cap: cv2.VideoCapture, verbose: bool = True) -> Dict:
 
     params = {'K_l':K_l, 'dist_l':dist_l, 'K_r':K_r, 'dist_r':dist_r,
               'R':R, 'T':T, 'R1':R1, 'R2':R2, 'P1':P1, 'P2':P2, 'Q':Q}
-    np.savez(calib_file, **params)
+    output_path = Path(calib_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(output_path, **params)
     if verbose:
-        print("Calibration complete and saved.")
+        print(f"Calibration complete and saved to {output_path}.")
     return params
 
 
-def calibrate_stereo_from_saved_images(image_dir: str, verbose: bool = True) -> Dict:
+def calibrate_stereo_from_saved_images(
+    image_dir: str,
+    calib_path: str | Path,
+    verbose: bool = True,
+) -> Dict:
     """Recalibrate stereo cameras from previously saved side-by-side images.
 
     Args:
@@ -772,10 +791,32 @@ def calibrate_stereo_from_saved_images(image_dir: str, verbose: bool = True) -> 
         "P2": P2,
         "Q": Q,
     }
-    np.savez(calib_file, **params)
+    output_path = Path(calib_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(output_path, **params)
     if verbose:
-        print(f"Recalibration complete and saved to {calib_file}. Used {len(used_files)} image pairs.")
+        print(f"Recalibration complete and saved to {output_path}. Used {len(used_files)} image pairs.")
     return params
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse calibration CLI arguments."""
+    parser = argparse.ArgumentParser(description="Stereo calibration helper")
+    parser.add_argument("--device", default="0", help="Camera device index or path used for calibration")
+    parser.add_argument(
+        "--direction",
+        default="",
+        help="Optional direction label for the calibration archive name, e.g. front/right/back/left",
+    )
+    parser.add_argument(
+        "--calib",
+        default="",
+        help="Optional output .npz path; defaults to a per-device filename",
+    )
+    parser.add_argument("--images", action="store_true", help="Recalibrate from saved images")
+    parser.add_argument("--width", type=int, default=None, help="Frame width (overrides profile)")
+    parser.add_argument("--height", type=int, default=None, help="Frame height (overrides profile)")
+    return parser.parse_args()
 
 
 # -------------------------------
@@ -790,16 +831,37 @@ def main():
     Returns:
         None.
     """
+    args = parse_args()
     verbose = True  # toggle this to False for silent mode
-    if "--images" in sys.argv:
-        calibrate_stereo_from_saved_images(save_dir)
-        return
+    device_text = str(args.device).strip()
+    direction_text = str(args.direction).strip()
+    if str(args.calib).strip():
+        calib_path = Path(args.calib).expanduser()
+    elif direction_text:
+        calib_path = calibration_path_for_direction(direction_text)
+    else:
+        calib_path = calibration_path_for_device(device_text)
 
-    cap = cv2.VideoCapture(0, select_camera_backend())  # Adjust camera index as needed
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    if args.images:
+        calibrate_stereo_from_saved_images(save_dir, calib_path=calib_path)
+        return
+    # Resolve width/height: CLI override -> profile defaults -> fallback
+    if args.width is None or args.height is None:
+        try:
+            defaults, _, _ = _load_runtime_defaults([])
+        except Exception:
+            defaults = {}
+        w = int(args.width if args.width is not None else defaults.get("width", FALLBACK_FRAME_WIDTH))
+        h = int(args.height if args.height is not None else defaults.get("height", FALLBACK_FRAME_HEIGHT))
+    else:
+        w = int(args.width)
+        h = int(args.height)
+
+    cap = cv2.VideoCapture(_device_source(device_text), select_camera_backend())
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
     try:
-        calibrate_stereo(cap, verbose=verbose)
+        calibrate_stereo(cap, calib_path=calib_path, verbose=verbose)
     finally:
         cap.release()
         cv2.destroyAllWindows()

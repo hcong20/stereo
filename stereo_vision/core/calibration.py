@@ -32,11 +32,11 @@ class StereoCalibration:
     q: np.ndarray | None = None
 
     @property
-    def baseline_m(self) -> float:
-        """Return stereo baseline magnitude from translation vector T.
+    def baseline_mm(self) -> float:
+        """Return stereo baseline magnitude from translation vector T in mm.
 
         Returns:
-            Euclidean norm of translation vector in calibration units.
+            Euclidean norm of translation vector in calibration units (mm).
         """
         return float(np.linalg.norm(self.t))
 

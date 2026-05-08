@@ -22,6 +22,7 @@ def build_viz_layers(
     latency_ms: float,
     active_idx: int,
     device_list: Sequence[str],
+    device_directions: Sequence[str] | None,
     last_switch_latency_ms: Optional[float],
     switch_pending: Optional[dict],
     last_switch_breakdown: Optional[dict],
@@ -52,6 +53,7 @@ def build_viz_layers(
         latency_ms: Per-frame processing latency in milliseconds.
         active_idx: Zero-based active input index.
         device_list: Available input device paths.
+        device_directions: Optional direction labels aligned with device_list.
         last_switch_latency_ms: Last measured input-switch latency (unused in overlay).
         switch_pending: Pending switch state (unused in overlay).
         last_switch_breakdown: Switch timing breakdown (unused in overlay).
@@ -103,7 +105,10 @@ def build_viz_layers(
     dist_raw_color = dist_color if distance_filtered is not None else raw_color
 
     # Active stereo source index and device path currently used for capture.
-    metric_input = f"Input: {active_idx + 1}/{len(device_list)} ({device_list[active_idx]})"
+    direction_label = ""
+    if device_directions is not None and active_idx < len(device_directions):
+        direction_label = f" [{device_directions[active_idx]}]"
+    metric_input = f"Input: {active_idx + 1}/{len(device_list)}{direction_label} ({device_list[active_idx]})"
     # Throughput and per-frame end-to-end processing time for the current loop iteration.
     metric_perf = f"FPS: {fps:.1f} | Latency: {latency_ms:.1f} ms"
     # Runtime preset profile controlling ROI gating/smoothing behavior.
@@ -183,6 +188,7 @@ def compose_runtime_visualization(
     latency_ms: float,
     active_idx: int,
     device_list: Sequence[str],
+    device_directions: Sequence[str] | None,
     switch_state: Any,
     valid_pixels: int,
     total_pixels: int,
@@ -215,6 +221,7 @@ def compose_runtime_visualization(
         latency_ms: Per-frame processing latency in milliseconds.
         active_idx: Zero-based active input index.
         device_list: Available input device paths.
+        device_directions: Optional direction labels aligned with device_list.
         switch_state: Runtime switch state object.
         valid_pixels: Number of finite depth pixels in ROI.
         total_pixels: Total number of ROI pixels.
@@ -262,6 +269,7 @@ def compose_runtime_visualization(
         latency_ms=latency_ms,
         active_idx=active_idx,
         device_list=device_list,
+        device_directions=device_directions,
         last_switch_latency_ms=switch_state.last_switch_latency_ms,
         switch_pending=switch_state.pending,
         last_switch_breakdown=switch_state.last_switch_breakdown,

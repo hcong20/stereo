@@ -2,14 +2,15 @@ import cv2
 import numpy as np
 import sys
 from collections import deque
+import argparse
+
+from stereo_vision.app_cli import _load_runtime_defaults
 
 # =========================
-# Const Parameters
+# Configurable Parameters (defaults come from config)
 # =========================
-FRAME_WIDTH = 1280
-FRAME_HEIGHT = 480
-
-SINGLE_WIDTH = FRAME_WIDTH // 2
+DEFAULT_FRAME_WIDTH = 1280
+DEFAULT_FRAME_HEIGHT = 480
 
 ROI_RATIO = 0.2
 
@@ -50,6 +51,21 @@ def get_center_roi(img):
 # =========================
 # Main
 # =========================
+def _device_source(device_text: str) -> int | str:
+    try:
+        return int(str(device_text).strip())
+    except Exception:
+        return str(device_text)
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Focus tuner helper")
+    p.add_argument("--device", default=26, help="Camera device index or path")
+    p.add_argument("--width", type=int, default=None, help="Frame width (overrides profile)")
+    p.add_argument("--height", type=int, default=None, help="Frame height (overrides profile)")
+    return p.parse_args()
+
+
 if sys.platform == "darwin":
     camera_backend = cv2.CAP_AVFOUNDATION
 elif sys.platform.startswith("linux"):
@@ -57,9 +73,22 @@ elif sys.platform.startswith("linux"):
 else:
     camera_backend = cv2.CAP_ANY
 
-cap = cv2.VideoCapture(26, camera_backend)
+
+args = parse_args()
+# Load profile defaults if width/height not provided
+try:
+    defaults, _, _ = _load_runtime_defaults([])
+except Exception:
+    defaults = {}
+
+FRAME_WIDTH = int(args.width if args.width is not None else defaults.get("width", DEFAULT_FRAME_WIDTH))
+FRAME_HEIGHT = int(args.height if args.height is not None else defaults.get("height", DEFAULT_FRAME_HEIGHT))
+
+SINGLE_WIDTH = FRAME_WIDTH // 2
+
+cap = cv2.VideoCapture(_device_source(args.device), camera_backend)
 if not cap.isOpened():
-    cap = cv2.VideoCapture(26)
+    cap = cv2.VideoCapture(_device_source(args.device))
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 

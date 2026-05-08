@@ -1,12 +1,167 @@
 """CLI and lightweight runtime helpers for stereo app entrypoints."""
 
 import argparse
+import json
+import os
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from stereo_vision.core.roi import ROI
+
+
+_CONFIG_FILENAME = "device_profiles.json"
+
+
+def _extract_config_arg(argv: list[str]) -> Optional[str]:
+    """Return the raw --config value from argv if present."""
+    for idx, arg in enumerate(argv):
+        if arg == "--config" and idx + 1 < len(argv):
+            return argv[idx + 1]
+        if arg.startswith("--config="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def _detect_os_profile() -> str:
+    """Return the most specific OS profile name available."""
+    if sys.platform == "darwin":
+        return "macos"
+
+    if sys.platform.startswith("linux"):
+        try:
+            os_release: dict[str, str] = {}
+            with open("/etc/os-release", encoding="utf-8") as handle:
+                for line in handle:
+                    if "=" not in line:
+                        continue
+                    key, value = line.rstrip().split("=", 1)
+                    os_release[key.strip().lower()] = value.strip().strip('"')
+
+            distro_id = os_release.get("id", "").strip().lower()
+            if distro_id in {"ubuntu", "debian"}:
+                return distro_id
+
+            distro_like = os_release.get("id_like", "").lower().split()
+            for candidate in ("ubuntu", "debian"):
+                if candidate in distro_like:
+                    return candidate
+        except OSError:
+            pass
+
+        return "linux"
+
+    return "default"
+
+
+def _default_config_path() -> Path:
+    """Return the in-tree config file location."""
+    return Path(__file__).resolve().parent / "config" / _CONFIG_FILENAME
+
+
+def _resolve_config_path(explicit_path: Optional[str]) -> Optional[Path]:
+    """Resolve the config file path from CLI, env, or bundled defaults."""
+    if explicit_path:
+        explicit = Path(explicit_path).expanduser()
+        if explicit.is_file():
+            return explicit
+        raise FileNotFoundError(f"Config file not found: {explicit_path}")
+
+    candidates: list[Path] = []
+
+    env_path = os.environ.get("STEREO_VISION_CONFIG", "").strip()
+    if env_path:
+        env_config = Path(env_path).expanduser()
+        if env_config.is_file():
+            return env_config
+        raise FileNotFoundError(f"Config file not found from STEREO_VISION_CONFIG: {env_path}")
+
+    candidates.append(_default_config_path())
+
+    cwd_path = Path.cwd() / _CONFIG_FILENAME
+    if cwd_path not in candidates:
+        candidates.append(cwd_path)
+
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_config_file(path: Path) -> dict[str, object]:
+    """Load a JSON config file containing default values and OS profiles."""
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file must contain a JSON object: {path}")
+    return data
+
+
+def _config_defaults_from_data(config_data: dict[str, object], profile_name: str) -> dict[str, object]:
+    """Merge default and OS-specific config values."""
+    merged: dict[str, object] = {}
+
+    default_section = config_data.get("default")
+    if isinstance(default_section, dict):
+        merged.update(default_section)
+
+    profiles = config_data.get("profiles")
+    if isinstance(profiles, dict):
+        linux_section = profiles.get("linux")
+        if profile_name in {"ubuntu", "debian", "linux"} and isinstance(linux_section, dict):
+            merged.update(linux_section)
+
+        profile_section = profiles.get(profile_name)
+        if isinstance(profile_section, dict):
+            merged.update(profile_section)
+
+    source_map = merged.get("source_map")
+    if isinstance(source_map, list):
+        devices: list[str] = []
+        directions: list[str] = []
+        bus_groups: list[str] = []
+        has_bus_groups = False
+
+        for entry in source_map:
+            if not isinstance(entry, dict):
+                continue
+            device = str(entry.get("device", "")).strip()
+            direction = str(entry.get("direction", "")).strip()
+            bus_group = str(entry.get("usb_bus_group")).strip()
+            if device:
+                devices.append(device)
+            if direction:
+                directions.append(direction)
+            if bus_group:
+                bus_groups.append(bus_group)
+                has_bus_groups = True
+
+        if devices:
+            merged["devices"] = ",".join(devices)
+            merged["device"] = devices[0]
+        if directions:
+            merged["directions"] = ",".join(directions)
+        if has_bus_groups:
+            merged["usb_bus_groups"] = ",".join(bus_groups)
+
+    return merged
+
+
+def _load_runtime_defaults(argv: Optional[list[str]] = None) -> tuple[dict[str, object], Optional[Path], str]:
+    """Load config-backed defaults for the current OS profile."""
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    explicit_config_arg = _extract_config_arg(args_list)
+    config_path = _resolve_config_path(explicit_config_arg)
+    profile_name = _detect_os_profile()
+    defaults: dict[str, object] = {}
+
+    if config_path is not None:
+        config_data = _load_config_file(config_path)
+        defaults = _config_defaults_from_data(config_data, profile_name)
+
+    return defaults, config_path, profile_name
 
 
 @dataclass
@@ -23,59 +178,75 @@ class PerfStats:
         return self.frame_count / elapsed
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     """Parse CLI options for camera, disparity, depth, and filtering."""
+    config_defaults, config_path, profile_name = _load_runtime_defaults(argv)
     parser = argparse.ArgumentParser(description="RK3588 Stereo Distance Measurement")
 
-    parser.add_argument("--device", default="0")
+    parser.add_argument(
+        "--config",
+        default=str(config_path) if config_path is not None else "",
+        help="Optional JSON config file with OS-specific defaults",
+    )
+    parser.add_argument("--device", default=str(config_defaults.get("device", "0")))
     parser.add_argument(
         "--devices",
-        default="",
+        default=str(config_defaults.get("devices", "")),
         help="Comma-separated stereo input devices, e.g. /dev/video20,/dev/video22,/dev/video24,/dev/video26",
+    )
+    parser.add_argument(
+        "--directions",
+        default=str(config_defaults.get("directions", "")),
+        help="Optional override for direction labels; normally derived from config source_map",
     )
     parser.add_argument(
         "--active-input",
         type=int,
-        default=1,
+        default=int(config_defaults.get("active_input", 1)),
         help="1-based input index selected at startup when --devices is used",
     )
     parser.add_argument(
         "--switch-timeout-ms",
         type=float,
-        default=500.0,
+        default=float(config_defaults.get("switch_timeout_ms", 2000.0)),
         help="Max wait for frame from selected input after switching",
     )
-    parser.add_argument("--calib", default="stereo_calib_params.npz")
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--calib",
+        default=str(config_defaults.get("calib", "")),
+        help="Optional calibration archive path; leave blank to auto-select a per-device file",
+    )
+    parser.add_argument("--width", type=int, default=int(config_defaults.get("width", 1280)))
+    parser.add_argument("--height", type=int, default=int(config_defaults.get("height", 480)))
+    parser.add_argument("--fps", type=int, default=int(config_defaults.get("fps", 30)))
     parser.add_argument(
         "--warmup-frames",
         type=int,
-        default=1,
+        default=int(config_defaults.get("warmup_frames", 1)),
         help="Frames discarded after camera open; lower values reduce switch latency",
     )
     parser.add_argument(
-        "--bus-groups",
-        default="",
+        "--usb-bus-groups",
+        dest="usb_bus_groups",
+        default=str(config_defaults.get("usb_bus_groups")),
         help=(
-            "Comma-separated bus/group label for each input device, "
-            "e.g. 0,0,2,2 for 4 inputs. "
-            "Required when using multiple inputs; grouped slot-aligned single-active mode is always used."
+            "Comma-separated USB bus-group labels for each input device, "
+            "e.g. front_right,front_right,back_left,back_left for 4 inputs. "
+            "Inputs with the same label share one bus path and must not be started at the same time."
         ),
     )
     parser.add_argument(
         "--gstreamer",
         dest="gstreamer",
         action="store_true",
-        default=False,
+        default=bool(config_defaults.get("gstreamer", False)),
         help="Use OpenCV CAP_GSTREAMER backend for camera capture (default: disabled)",
     )
     parser.add_argument(
         "--gstreamer-pipeline",
         "--gst-pipeline",
         dest="gstreamer_pipeline",
-        default="",
+        default=str(config_defaults.get("gstreamer_pipeline", "")),
         help=(
             "Optional custom GStreamer pipeline template. "
             "Supports placeholders {device}, {width}, {height}, {fps}."
@@ -84,7 +255,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gst-decode",
         choices=["auto", "hw", "sw"],
-        default="auto",
+        default=str(config_defaults.get("gst_decode", "auto")),
         help=(
             "GStreamer MJPEG decode path: auto prefers RK3588 hardware decode (mppjpegdec) "
             "with software fallback"
@@ -93,7 +264,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gst-output",
         choices=["auto", "nv12", "bgr"],
-        default="auto",
+        default=str(config_defaults.get("gst_output", "auto")),
         help=(
             "GStreamer output format: auto prefers NV12 (lower CPU path) with BGR fallback"
         ),
@@ -101,6 +272,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--nv12-preview-bgr",
         action="store_true",
+        default=bool(config_defaults.get("nv12_preview_bgr", False)),
         help=(
             "When using NV12 GStreamer output, convert frames to BGR for preview only "
             "while keeping grayscale matching path"
@@ -154,13 +326,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-disp", type=int, default=0)
     parser.add_argument("--depth-min-disp", type=float, default=0.1)
     parser.add_argument("--max-depth", type=float, default=20.0)
-    parser.add_argument(
-        "--baseline-unit",
-        choices=["auto", "m", "mm"],
-        default="auto",
-        help="Unit of T baseline stored in calibration",
-    )
-
     parser.add_argument("--ema-alpha", type=float, default=0.35)
     parser.add_argument("--max-jump", type=float, default=1.0)
     parser.add_argument("--filter-window", type=int, default=5)
@@ -224,7 +389,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional CSV file path for measurement logs",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if config_path is not None:
+        print(f"[INFO] Loaded config defaults from {config_path} (profile={profile_name})")
+    return args
 
 
 def parse_roi(text: str) -> ROI:
@@ -263,18 +431,6 @@ def get_screen_size() -> tuple[int, int] | None:
     except Exception:
         return None
     return None
-
-
-def resolve_baseline_m(raw_baseline: float, baseline_unit: str) -> float:
-    """Convert baseline value to meters using explicit or inferred unit."""
-    if baseline_unit == "m":
-        return raw_baseline
-    if baseline_unit == "mm":
-        return raw_baseline / 1000.0
-    # Auto: most stereo rigs are in cm-scale baseline; values >2 are likely mm.
-    if raw_baseline > 2.0:
-        return raw_baseline / 1000.0
-    return raw_baseline
 
 
 def safe_num_disparities_for_roi(requested: int, roi_width: int) -> int:

@@ -10,8 +10,11 @@ from stereo_vision.app_cli import (
     fourcc_to_str,
     parse_physical_size_mm,
     parse_roi,
-    resolve_baseline_m,
     safe_num_disparities_for_roi,
+)
+from stereo_vision.config.calibration_paths import (
+    calibration_path_for_device,
+    calibration_path_for_direction,
 )
 from stereo_vision.core.calibration import load_stereo_calibration
 from stereo_vision.core.depth import DepthConfig, DepthEstimator
@@ -31,10 +34,16 @@ def build_runtime_context(args: Namespace) -> RuntimeLoopConfig:
     device_list = [d.strip() for d in str(args.devices).split(",") if d.strip()]
     if len(device_list) == 0:
         device_list = [str(args.device)]
+    direction_list = [d.strip() for d in str(getattr(args, "directions", "")).split(",") if d.strip()]
     if len(device_list) != 4:
         print(
             f"[WARN] Expected 4 stereo inputs for deployment goal, got {len(device_list)}. "
             "System will run with available inputs."
+        )
+    if direction_list and len(direction_list) != len(device_list):
+        print(
+            f"[WARN] --directions count does not match --devices count; "
+            f"ignoring direction labels ({len(direction_list)} vs {len(device_list)})"
         )
 
     startup = initialize_capture(args, device_list)
@@ -43,15 +52,28 @@ def build_runtime_context(args: Namespace) -> RuntimeLoopConfig:
     switch_timeout_s = startup.switch_timeout_s
     active_idx = startup.active_idx
     left0 = startup.left0
+    active_device = device_list[active_idx]
+    direction_list = [d.strip() for d in str(getattr(args, "directions", "")).split(",") if d.strip()]
+    active_direction = direction_list[active_idx] if len(direction_list) == len(device_list) else ""
 
-    calib = load_stereo_calibration(args.calib)
+    if str(args.calib).strip():
+        calib_path = str(args.calib).strip()
+    elif active_direction:
+        direction_path = calibration_path_for_direction(active_direction)
+        calib_path = str(direction_path if direction_path.is_file() else calibration_path_for_device(active_device))
+    else:
+        calib_path = str(calibration_path_for_device(active_device))
+    if not str(args.calib).strip():
+        print(f"[INFO] Using calibration file: {calib_path}")
+    calib = load_stereo_calibration(calib_path)
 
     # Prime the camera once to discover frame geometry and stream properties.
     image_size = (left0.shape[1], left0.shape[0])
 
     if multi_mode:
+        direction_text = f", direction={active_direction}" if active_direction else ""
         print(
-            f"[INFO] Active input device: idx={active_idx + 1}, device={device_list[active_idx]}"
+            f"[INFO] Active input device: idx={active_idx + 1}{direction_text}, device={active_device}"
         )
     else:
         cap = cam.cap
@@ -76,11 +98,10 @@ def build_runtime_context(args: Namespace) -> RuntimeLoopConfig:
         raise ValueError("--scale should be in [0.25, 1.0]")
 
     focal_px = float(rect.p1[0, 0]) * scale
-    baseline_raw = float(calib.baseline_m)
-    baseline_m = resolve_baseline_m(baseline_raw, str(args.baseline_unit))
-    print(
-        f"[INFO] baseline_raw={baseline_raw:.6f}, baseline_m={baseline_m:.6f}, unit={args.baseline_unit}"
-    )
+    baseline_raw = float(calib.baseline_mm)
+    # Baseline stored in calibration is mm; convert to meters.
+    baseline_m = float(baseline_raw) / 1000.0
+    print(f"[INFO] baseline_raw={baseline_raw:.6f} mm, baseline_m={baseline_m:.6f} m")
 
     roi = parse_roi(args.roi)
     roi_phys_w_m, roi_phys_h_m = parse_physical_size_mm(str(args.roi_physical_size_mm))

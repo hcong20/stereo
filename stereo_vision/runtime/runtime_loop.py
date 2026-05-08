@@ -36,6 +36,10 @@ from stereo_vision.runtime.runtime_visualization import (
 )
 from stereo_vision.runtime.runtime_tuning import RoiTuneController
 from stereo_vision.ui.visualization import VizState, register_click
+from stereo_vision.config.calibration_paths import calibration_path_for_device, calibration_path_for_direction
+from stereo_vision.core.calibration import load_stereo_calibration
+from stereo_vision.core.depth import DepthConfig, DepthEstimator
+from stereo_vision.core.rectification import build_rectification_maps
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,56 @@ def run_runtime_loop(
     roi_tuning = cfg.roi_tuning
     preview_nv12_bgr = cfg.preview_nv12_bgr
     profiler = cfg.profiler
+    direction_list = [d.strip() for d in str(getattr(args, "directions", "")).split(",") if d.strip()]
+    scale = float(args.scale)
+
+    current_calib_path: str | None = None
+    current_calib_label: str | None = None
+
+    def resolve_calibration_path(active_source_idx: int) -> tuple[str, str]:
+        active_device = device_list[active_source_idx]
+        active_direction = direction_list[active_source_idx] if len(direction_list) == len(device_list) else ""
+
+        if str(args.calib).strip():
+            calib_path = str(args.calib).strip()
+            return calib_path, (active_direction or active_device)
+
+        if active_direction:
+            direction_path = calibration_path_for_direction(active_direction)
+            if direction_path.is_file():
+                return str(direction_path), active_direction
+
+        device_path = calibration_path_for_device(active_device)
+        return str(device_path), (active_direction or active_device)
+
+    def reload_calibration(active_source_idx: int, image_size: tuple[int, int]) -> None:
+        nonlocal rect, baseline_m, focal_px, depth_estimator, current_calib_path, current_calib_label
+
+        calib_path, calib_label = resolve_calibration_path(active_source_idx)
+        if current_calib_path == calib_path:
+            return
+
+        calib = load_stereo_calibration(calib_path)
+        rect = build_rectification_maps(
+            calib,
+            image_size,
+            use_precomputed=bool(args.use_precomputed_rect),
+        )
+        focal_px = float(rect.p1[0, 0]) * scale
+        baseline_raw = float(calib.baseline_mm)
+        # Baseline stored in calibration is mm; convert to meters.
+        baseline_m = float(baseline_raw) / 1000.0
+        depth_estimator = DepthEstimator(
+            DepthConfig(
+                focal_px=focal_px,
+                baseline_m=baseline_m,
+                min_disparity=max(0.01, float(args.depth_min_disp)),
+                max_depth_m=float(args.max_depth),
+            )
+        )
+        current_calib_path = calib_path
+        current_calib_label = calib_label
+        print(f"[INFO] Loaded calibration: {calib_label} -> {calib_path}")
 
     swap_lr = bool(args.swap_lr)
     preview_nv12_warned = False
@@ -194,6 +248,9 @@ def run_runtime_loop(
                 left, right = right, left
                 if preview_pair_raw is not None:
                     preview_pair_raw = (preview_pair_raw[1], preview_pair_raw[0])
+
+            # Reload direction-specific calibration when the active source changes.
+            reload_calibration(active_idx, (left.shape[1], left.shape[0]))
 
             # 2) Geometric rectification: align epipolar lines for valid stereo matching.
             left_rect, right_rect = rectify_pair(left, right, rect)
@@ -315,6 +372,7 @@ def run_runtime_loop(
                     latency_ms=latency_ms,
                     active_idx=active_idx,
                     device_list=device_list,
+                    device_directions=direction_list if len(direction_list) == len(device_list) else None,
                     switch_state=switch_state,
                     valid_pixels=valid_pixels,
                     total_pixels=total_pixels,

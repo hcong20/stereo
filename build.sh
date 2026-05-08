@@ -63,6 +63,7 @@ PYI_ARGS=(
   --name "$APP_NAME"
   --collect-all cv2
   --add-data "stereo_calib_params.npz:."
+  --add-data "stereo_vision/config/device_profiles.json:stereo_vision/config"
 )
 
 if [[ "$MODE" == "onefile" ]]; then
@@ -75,4 +76,4 @@ fi
 
 echo "Build complete."
 echo "- Binary: dist/$APP_NAME"
-echo "- Run example: ./dist/$APP_NAME --device /dev/video0 --calib ./stereo_calib_params.npz --fps 30"
+echo "- Run example: ./dist/$APP_NAME --device /dev/video20 --fps 30"

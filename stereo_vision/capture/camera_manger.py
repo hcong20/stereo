@@ -58,7 +58,7 @@ class CameraManger:
     def _aligned_live_indices(self, reference_index: int) -> Dict[str, int]:
         """Pick one live source per group aligned by intra-group slot.
 
-        Example for groups [0,0,2,2]:
+        Example for groups [front_right,front_right,back_left,back_left]:
             slot 0 -> (1,3)
             slot 1 -> (2,4)
         """

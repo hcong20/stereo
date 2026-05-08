@@ -5,7 +5,7 @@ Production-oriented stereo distance measurement pipeline for RK3588 (Ubuntu 22.0
 ## Features
 
 - Dual-view capture from a single combined stereo USB stream (left + right)
-- Stereo calibration loading from `stereo_calib_params.npz`
+- Stereo calibration loading from per-device `.npz` archives
 - Rectification map precomputation and fast remap
 - StereoSGBM disparity computation with low-latency defaults
 - Disparity to metric depth conversion
@@ -41,7 +41,7 @@ sudo apt install -y python3-opencv python3-numpy v4l-utils gstreamer1.0-tools \
 ## Run
 
 ```bash
-python3 main.py --device /dev/video0 --calib stereo_calib_params.npz --fps 30
+python3 main.py --device /dev/video0 --fps 30
 ```
 
 4-input deployment mode (single active pipeline, runtime switching):
@@ -52,7 +52,6 @@ python3 main.py \
   --active-input 1 \
   --switch-timeout-ms 500 \
   --capture-mode auto \
-  --calib stereo_calib_params.npz \
   --fps 30
 ```
 
@@ -66,9 +65,30 @@ python3 main.py \
   --switch-timeout-ms 500 \
   --capture-mode single-active \
   --warmup-frames 1 \
-  --calib stereo_calib_params.npz \
   --fps 30
 ```
+
+Device and capture presets are loaded from `stereo_vision/config/device_profiles.json`.
+The app auto-selects the `macos`, `ubuntu`, `debian`, or `linux` profile based on the host OS,
+and you can override the file with `--config /path/to/device_profiles.json`.
+Each profile can define a `source_map` array with `device`, `direction`, and optional `usb_bus_group`
+fields, so you do not need to pass a separate device-to-direction mapping on the command line.
+Use the same `usb_bus_group` value for inputs that share one USB bus/port path and must not be
+started at the same time.
+
+Default profile targets:
+
+- macOS: `device=0`
+- Ubuntu: `source_map` defines `/dev/video20`, `/dev/video22`, `/dev/video24`, `/dev/video26`
+- Debian: `source_map` defines `/dev/video20`, `/dev/video22`, `/dev/video24`, `/dev/video26`
+
+Edit the JSON file if your camera node, direction labels, bus groups, frame size, or capture backend differs from the defaults.
+
+Bus group example: to group left+right and front+back use `--usb-bus-groups front_right,front_right,back_left,back_left` or set `usb_bus_group` in the `source_map` entries.
+
+Frame size: default `width`/`height` are read from `device_profiles.json` (per-profile); tools accept `--width`/`--height` CLI overrides.
+
+Calibration baseline: baseline stored inside calibration archives is expressed in millimeters (mm) and the runtime converts it to meters automatically.
 
 ## Build Executable (Ubuntu 22.04)
 
@@ -87,7 +107,7 @@ dist/stereo_app
 Run it with:
 
 ```bash
-./dist/stereo_app --device /dev/video0 --calib ./stereo_calib_params.npz --fps 30
+./dist/stereo_app --device /dev/video20 --fps 30
 ```
 
 Optional: build a folder bundle with faster startup:
@@ -113,7 +133,6 @@ Useful flags:
 ```bash
 python3 main.py \
   --device /dev/video0 \
-  --calib stereo_calib_params.npz \
   --fps 30 \
   --roi 220,140,200,140 \
   --num-disp 128 \
@@ -154,7 +173,7 @@ python3 main.py --roi-tune-preset mid --roi-valid-ratio-min 0.20 --ema-alpha 0.4
 Default capture backend is OpenCV V4L2. To enable GStreamer backend:
 
 ```bash
-python3 main.py --gstreamer --device /dev/video0 --calib stereo_calib_params.npz
+python3 main.py --gstreamer --device /dev/video20
 ```
 
 By default, GStreamer capture now prefers RK3588 hardware MJPEG decode (`mppjpegdec`)
@@ -199,8 +218,12 @@ For custom GStreamer capture pipeline:
 python3 main.py \
   --device /dev/video0 \
   --gstreamer-pipeline "v4l2src device={device} io-mode=2 ! image/jpeg,width={width},height={height},framerate={fps}/1 ! jpegdec ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false" \
-  --calib stereo_calib_params.npz
+  --fps 30
 ```
+
+Calibration archives are auto-resolved per device and saved as files like `stereo_calib_dev_video20.npz`.
+Pass `--calib /path/to/custom.npz` only when you want to override that default. If you use the config `source_map`, the runtime will
+derive device and direction defaults from that file automatically.
 
 To suppress non-fatal OpenCV/GStreamer startup warnings:
 
