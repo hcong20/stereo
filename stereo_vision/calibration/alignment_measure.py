@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import sys
+import argparse
 
 # =========================
 # Const Parameters
@@ -33,6 +34,13 @@ def draw_horizontal_lines(img, step=50):
         cv2.line(img, (0, y), (w, y), (0, 255, 0), 1)
     return img
 
+
+def _parse_device(value: str):
+    raw = str(value).strip()
+    if raw.isdigit():
+        return int(raw)
+    return raw
+
 # =========================
 # Main
 # =========================
@@ -43,7 +51,16 @@ elif sys.platform.startswith("linux"):
 else:
     camera_backend = cv2.CAP_ANY
 
-cap = cv2.VideoCapture(0, camera_backend)
+parser = argparse.ArgumentParser(description="Stereo alignment measurement helper")
+parser.add_argument(
+    "--device",
+    default="20",
+    help="Camera device index or path to open with VideoCapture, e.g. 20 or /dev/video20",
+)
+args = parser.parse_args()
+
+# Use the device passed from the command line so this script can target a specific camera node.
+cap = cv2.VideoCapture(_parse_device(args.device), camera_backend)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 

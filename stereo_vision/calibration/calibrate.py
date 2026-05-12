@@ -6,6 +6,13 @@ import sys
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
+# Allow running this file directly via path (e.g. python3 stereo_vision/calibration/calibrate.py)
+# by adding the repository root to sys.path for absolute package imports.
+if __package__ in (None, ""):
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
 from stereo_vision.config.calibration_paths import calibration_path_for_device, calibration_path_for_direction
 from stereo_vision.app_cli import _load_runtime_defaults
 

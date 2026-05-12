@@ -9,7 +9,7 @@
     ],
     "active_input": 1,
     "switch_timeout_ms": 2000.0,
-    "calib": "stereo_calib_params.npz",
+    "calib": "",
     "width": 1280,
     "height": 480,
     "fps": 30,

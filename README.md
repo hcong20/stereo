@@ -225,6 +225,22 @@ Calibration archives are auto-resolved per device and saved as files like `stere
 Pass `--calib /path/to/custom.npz` only when you want to override that default. If you use the config `source_map`, the runtime will
 derive device and direction defaults from that file automatically.
 
+Calibration helper examples:
+
+```bash
+# Open a specific camera by device index or path
+python3 -m stereo_vision.calibration.calibrate --device 20
+
+# Use a direction label so the output archive can be chosen by side
+python3 -m stereo_vision.calibration.calibrate --device /dev/video20 --direction front
+
+# Recalibrate from saved side-by-side images
+python3 -m stereo_vision.calibration.calibrate --images
+```
+
+The `--direction` flag is useful when the same device can produce different calibration files for
+different physical camera positions, such as `front`, `right`, `back`, or `left`.
+
 To suppress non-fatal OpenCV/GStreamer startup warnings:
 
 ```bash
