@@ -4,7 +4,7 @@ import sys
 from collections import deque
 import argparse
 
-from stereo_vision.app_cli import _load_runtime_defaults
+from src.app_cli import _load_runtime_defaults
 
 # =========================
 # Configurable Parameters (defaults come from config)

@@ -6,27 +6,27 @@ from argparse import Namespace
 
 import cv2
 
-from stereo_vision.app_cli import (
+from src.app_cli import (
     fourcc_to_str,
     parse_physical_size_mm,
     parse_roi,
     safe_num_disparities_for_roi,
 )
-from stereo_vision.config.calibration_paths import (
+from src.config.calibration_paths import (
     calibration_path_for_device,
     calibration_path_for_direction,
 )
-from stereo_vision.core.calibration import load_stereo_calibration
-from stereo_vision.core.depth import DepthConfig, DepthEstimator
-from stereo_vision.core.disparity import SGBMConfig, StereoDisparityEstimator
-from stereo_vision.core.rectification import build_rectification_maps
-from stereo_vision.core.roi import ROI, roi_from_physical_size
-from stereo_vision.pipeline.optimization import RuntimeOptimizationConfig
-from stereo_vision.pipeline.preprocess import FramePreprocessor, PreprocessConfig
-from stereo_vision.runtime.runtime_loop import RuntimeLoopConfig
-from stereo_vision.runtime.runtime_profile import StageProfiler
-from stereo_vision.runtime.runtime_tuning import RoiTuneController
-from stereo_vision.capture.startup import initialize_capture
+from src.core.calibration import load_stereo_calibration
+from src.core.depth import DepthConfig, DepthEstimator
+from src.core.disparity import SGBMConfig, StereoDisparityEstimator
+from src.core.rectification import build_rectification_maps
+from src.core.roi import ROI, roi_from_physical_size
+from src.pipeline.optimization import RuntimeOptimizationConfig
+from src.pipeline.preprocess import FramePreprocessor, PreprocessConfig
+from src.runtime.runtime_loop import RuntimeLoopConfig
+from src.runtime.runtime_profile import StageProfiler
+from src.runtime.runtime_tuning import RoiTuneController
+from src.capture.startup import initialize_capture
 
 
 def build_runtime_context(args: Namespace) -> RuntimeLoopConfig:

@@ -11,35 +11,36 @@ from typing import Any
 import cv2
 import numpy as np
 
-from stereo_vision.app_cli import PerfStats, get_screen_size
-from stereo_vision.core.depth import DepthEstimator
-from stereo_vision.core.disparity import StereoDisparityEstimator
-from stereo_vision.core.rectification import rectify_pair
-from stereo_vision.core.roi import ROI
-from stereo_vision.pipeline.optimization import RuntimeOptimizationConfig
-from stereo_vision.pipeline.preprocess import FramePreprocessor
-from stereo_vision.runtime.runtime_controls import process_runtime_key_events
-from stereo_vision.runtime.runtime_processing import (
+from src.app_cli import PerfStats, get_screen_size
+from src.core.depth import DepthEstimator
+from src.core.disparity import StereoDisparityEstimator
+from src.core.rectification import rectify_pair
+from src.core.roi import ROI
+from src.pipeline.optimization import RuntimeOptimizationConfig
+from src.pipeline.preprocess import FramePreprocessor
+from src.runtime.runtime_controls import process_runtime_key_events
+from src.runtime.runtime_processing import (
     compute_depth_and_distance,
     compute_disparity,
     compute_runtime_roi,
 )
-from stereo_vision.runtime.runtime_profile import StageProfiler
-from stereo_vision.runtime.runtime_switching import (
+from src.runtime.runtime_profile import StageProfiler
+from src.runtime.runtime_switching import (
     capture_active_frame_and_finalize,
     configure_switch_runtime_state,
     get_preview_pair_for_active_frame,
 )
-from stereo_vision.runtime.runtime_visualization import (
+from src.runtime.runtime_visualization import (
     apply_click_probe_overlay,
     compose_runtime_visualization,
 )
-from stereo_vision.runtime.runtime_tuning import RoiTuneController
-from stereo_vision.ui.visualization import VizState, register_click
-from stereo_vision.config.calibration_paths import calibration_path_for_device, calibration_path_for_direction
-from stereo_vision.core.calibration import load_stereo_calibration
-from stereo_vision.core.depth import DepthConfig, DepthEstimator
-from stereo_vision.core.rectification import build_rectification_maps
+from src.runtime.runtime_tuning import RoiTuneController
+from src.runtime.can_interface import CANConfig, CANSender
+from src.ui.visualization import VizState, register_click
+from src.config.calibration_paths import calibration_path_for_device, calibration_path_for_direction
+from src.core.calibration import load_stereo_calibration
+from src.core.depth import DepthConfig, DepthEstimator
+from src.core.rectification import build_rectification_maps
 
 
 @dataclass(frozen=True)

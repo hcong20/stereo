@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from stereo_vision.app_cli import decode_switch_index
-from stereo_vision.runtime.runtime_switching import request_switch
+from src.app_cli import decode_switch_index
+from src.runtime.runtime_switching import request_switch
 
 
 def process_runtime_key_events(

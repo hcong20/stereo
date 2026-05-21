@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from stereo_vision.core.roi import ROI
+from src.core.roi import ROI
 
 
 _CONFIG_FILENAME = "device_profiles.json"

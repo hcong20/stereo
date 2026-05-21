@@ -7,8 +7,8 @@ from typing import Optional
 
 import numpy as np
 
-from stereo_vision.capture.camera_manger import CameraManger
-from stereo_vision.capture.camera_worker import CameraConfig, CameraWorker
+from src.capture.camera_manger import CameraManger
+from src.capture.camera_worker import CameraConfig, CameraWorker
 
 
 @dataclass

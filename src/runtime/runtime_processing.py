@@ -7,12 +7,12 @@ from argparse import Namespace
 import cv2
 import numpy as np
 
-from stereo_vision.app_cli import safe_num_disparities_for_roi
-from stereo_vision.core.depth import DepthEstimator
-from stereo_vision.core.disparity import SGBMConfig, StereoDisparityEstimator
-from stereo_vision.core.roi import ROI, robust_roi_distance, roi_from_physical_size
-from stereo_vision.pipeline.optimization import RuntimeOptimizationConfig, crop_for_disparity
-from stereo_vision.runtime.runtime_tuning import RoiTuneController
+from src.app_cli import safe_num_disparities_for_roi
+from src.core.depth import DepthEstimator
+from src.core.disparity import SGBMConfig, StereoDisparityEstimator
+from src.core.roi import ROI, robust_roi_distance, roi_from_physical_size
+from src.pipeline.optimization import RuntimeOptimizationConfig, crop_for_disparity
+from src.runtime.runtime_tuning import RoiTuneController
 
 
 def compute_runtime_roi(

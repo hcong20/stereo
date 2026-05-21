@@ -18,15 +18,15 @@ Production-oriented stereo distance measurement pipeline for RK3588 (Ubuntu 22.0
 ## Project Structure
 
 - `main.py`: Integrated real-time pipeline
-- `stereo_vision/camera.py`: V4L2/GStreamer capture module
-- `stereo_vision/calibration.py`: Calibration loader
-- `stereo_vision/rectification.py`: Rectification map builder and remap
-- `stereo_vision/disparity.py`: StereoSGBM wrapper
-- `stereo_vision/depth.py`: Depth conversion and validity handling
-- `stereo_vision/roi.py`: ROI model and robust depth statistics
-- `stereo_vision/filters.py`: Temporal smoothing filters
-- `stereo_vision/visualization.py`: Display overlays and click callbacks
-- `stereo_vision/optimization.py`: Runtime optimization helpers
+- `src/camera.py`: V4L2/GStreamer capture module
+- `src/calibration.py`: Calibration loader
+- `src/rectification.py`: Rectification map builder and remap
+- `src/disparity.py`: StereoSGBM wrapper
+- `src/depth.py`: Depth conversion and validity handling
+- `src/roi.py`: ROI model and robust depth statistics
+- `src/filters.py`: Temporal smoothing filters
+- `src/visualization.py`: Display overlays and click callbacks
+- `src/optimization.py`: Runtime optimization helpers
 
 ## Dependencies (APT only)
 
@@ -68,7 +68,7 @@ python3 main.py \
   --fps 30
 ```
 
-Device and capture presets are loaded from `stereo_vision/config/device_profiles.json`.
+Device and capture presets are loaded from `src/config/device_profiles.json`.
 The app auto-selects the `macos`, `ubuntu`, `debian`, or `linux` profile based on the host OS,
 and you can override the file with `--config /path/to/device_profiles.json`.
 Each profile can define a `source_map` array with `device`, `direction`, and optional `usb_bus_group`
@@ -229,13 +229,13 @@ Calibration helper examples:
 
 ```bash
 # Open a specific camera by device index or path
-python3 -m stereo_vision.calibration.calibrate --device 20
+python3 -m src.calibration.calibrate --device 20
 
 # Use a direction label so the output archive can be chosen by side
-python3 -m stereo_vision.calibration.calibrate --device /dev/video20 --direction front
+python3 -m src.calibration.calibrate --device /dev/video20 --direction front
 
 # Recalibrate from saved side-by-side images
-python3 -m stereo_vision.calibration.calibrate --images
+python3 -m src.calibration.calibrate --images
 ```
 
 The `--direction` flag is useful when the same device can produce different calibration files for

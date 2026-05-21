@@ -63,7 +63,7 @@ PYI_ARGS=(
   --name "$APP_NAME"
   --collect-all cv2
   --add-data "stereo_calib_params.npz:."
-  --add-data "stereo_vision/config/device_profiles.json:stereo_vision/config"
+  --add-data "src/config/device_profiles.json:src/config"
 )
 
 if [[ "$MODE" == "onefile" ]]; then
