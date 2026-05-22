@@ -1,6 +1,7 @@
 # Runtime dependencies
-numpy>=1.21
-opencv-python>=4.8
+numpy<2 # opencv with GStreamer in RK3588 is compiled with NumPy 1.x
+# opencv-python>=4.8 # Installing OpenCV via pip typically results in a build without GStreamer support enabled.
 
 # Build/packaging tool used by build.sh
 pyinstaller>=6.0
+python-can>=4.0

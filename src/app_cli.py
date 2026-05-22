@@ -389,6 +389,31 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Optional CSV file path for measurement logs",
     )
 
+    # CAN bus output options
+    parser.add_argument(
+        "--can-enable",
+        action="store_true",
+        help="Enable CAN bus output for distance measurements",
+    )
+    parser.add_argument(
+        "--can-channel",
+        type=str,
+        default=str(config_defaults.get("can_channel", "can0")),
+        help="SocketCAN channel to use (default: can0)",
+    )
+    parser.add_argument(
+        "--can-id",
+        type=lambda s: int(s, 0),
+        default=int(config_defaults.get("can_id", 0x401)),
+        help="CAN arbitration id to publish distance to (hex or decimal, default: 0x401)",
+    )
+    parser.add_argument(
+        "--can-bustype",
+        type=str,
+        default=str(config_defaults.get("can_bustype", "socketcan")),
+        help="python-can bus type (default: socketcan)",
+    )
+
     args = parser.parse_args(argv)
     if config_path is not None:
         print(f"[INFO] Loaded config defaults from {config_path} (profile={profile_name})")

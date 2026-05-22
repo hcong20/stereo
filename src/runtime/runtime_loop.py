@@ -221,6 +221,14 @@ def run_runtime_loop(
                     "timestamp,distance_m,distance_raw_m,fps,latency_ms,input_idx,probe_x,probe_y,probe_depth_m\n"
                 )
             print(f"[INFO] Measurement CSV output: {log_file_path}")
+    can_sender = None
+    if bool(getattr(args, "can_enable", False)):
+        try:
+            can_cfg = CANConfig(channel=str(getattr(args, "can_channel", "can0")), arbitration_id=int(getattr(args, "can_id", 0x401)), bustype=str(getattr(args, "can_bustype", "socketcan")))
+            can_sender = CANSender(can_cfg)
+            print(f"[INFO] CAN output enabled: channel={can_cfg.channel} id=0x{can_cfg.arbitration_id:x} bustype={can_cfg.bustype}")
+        except Exception as e:
+            print(f"[WARN] Failed to initialize CAN sender: {e}")
 
     # Main real-time loop: capture -> rectify -> preprocess -> disparity -> depth -> visualize.
     try:
@@ -311,8 +319,18 @@ def run_runtime_loop(
             # size when the filter rejects a real scene change as a jump.
             if distance_raw is not None and np.isfinite(distance_raw) and distance_raw > 0:
                 roi_depth_ref_m = float(distance_raw)
+                distance_to_send = float(distance_raw)*1000
             elif distance_filtered is not None and np.isfinite(distance_filtered) and distance_filtered > 0:
                 roi_depth_ref_m = float(distance_filtered)
+                distance_to_send = float(distance_filtered)*1000
+
+            # Send distance on CAN when enabled. Prefer filtered reading when available.
+            try:
+                if can_sender is not None:
+                    can_sender.send_distance_mm(distance_to_send)
+            except Exception:
+                # Non-fatal: continue runtime loop even when CAN fails.
+                pass
 
             if viz_state.clicked_px is None:
                 # Default probe to image center until user selects another pixel.
@@ -443,3 +461,8 @@ def run_runtime_loop(
     finally:
         if log_file is not None:
             log_file.close()
+        if can_sender is not None:
+            try:
+                can_sender.shutdown()
+            except Exception:
+                pass
