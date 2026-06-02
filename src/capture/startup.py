@@ -44,10 +44,11 @@ def _parse_direction_labels(text: str, source_count: int) -> Optional[list[str]]
         return None
     labels = [part.strip() for part in raw.split(",") if part.strip() != ""]
     if len(labels) != int(source_count):
-        raise ValueError(
-            "--directions count must match number of inputs: "
-            f"got {len(labels)} labels for {source_count} devices"
+        print(
+            "[WARN] --directions count does not match number of inputs; "
+            f"ignoring direction labels ({len(labels)} vs {source_count})"
         )
+        return None
     return labels
 
 
