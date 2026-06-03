@@ -282,6 +282,19 @@ Preprocessing path is CPU-only:
 - `--capture-mode auto` prefers parallel capture and auto-falls back to `single-active` when only one input is producing frames.
 - `--warmup-frames` reduces camera-open settling time; use `1` for lower switch latency.
 
+## CAN Integration
+
+- **Helper script**: see [tools/send_distance_can.py](tools/send_distance_can.py#L1-L40) for a small SocketCAN sender that can publish measured distances.
+- **Install dependency**: `python-can` (install with `pip install python-can`).
+- **Message format**: distance is sent as an unsigned 16-bit value in millimeters (0..65535 mm), little-endian in the CAN data bytes. The arbitration id and SocketCAN channel are configurable.
+- **Basic usage**:
+
+```bash
+python3 tools/send_distance_can.py --channel can0 --id 0x401 --distance 1234
+```
+
+- **Integration notes**: run the helper from your runtime when a measurement is available (subprocess or a small publisher module), or extend the main app to call the same encoding logic and publish via `python-can`.
+
 ## Optional C++ Optimization Path
 
 When Python CPU budget is tight:

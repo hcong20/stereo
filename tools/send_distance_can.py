@@ -36,13 +36,30 @@ def main():
         print("python-can is required. Install with: pip install python-can", file=sys.stderr)
         raise
 
-    bus = can.interface.Bus(channel=args.channel, bustype=args.bus_type)
+    # Use modern python-can parameter names when available (`interface`),
+    # fall back to legacy `bustype` for older python-can versions.
+    try:
+        bus = can.Bus(interface=args.bus_type, channel=args.channel)
+    except TypeError:
+        bus = can.interface.Bus(channel=args.channel, bustype=args.bus_type)
     msg = can.Message(arbitration_id=arb_id, data=data, is_extended_id=False)
     try:
         bus.send(msg)
         print(f"Sent distance={dist_mm} mm on {args.channel} id=0x{arb_id:x}")
     except can.CanError as e:
+        msg = str(e)
         print("Failed to send CAN message:", e, file=sys.stderr)
+        # Common socketCAN error when interface is down
+        if "Network is down" in msg or "ENETDOWN" in msg:
+            print("Hint: the CAN interface appears to be down.\n"
+                  "Bring it up (example for a physical CAN interface):\n"
+                  "  sudo ip link set can0 type can bitrate 500000\n"
+                  "  sudo ip link set up can0\n"
+                  "Or to create a virtual testing interface (vcan):\n"
+                  "  sudo modprobe vcan\n"
+                  "  sudo ip link add dev vcan0 type vcan\n"
+                  "  sudo ip link set up vcan0\n",
+                  file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
